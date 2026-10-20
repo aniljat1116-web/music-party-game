@@ -1,0 +1,49 @@
+{
+  "name": "music-party-game",
+  "version": "1.0.0",
+  "description": "Multiplayer music party game - Who Added This Song?",
+  "type": "module",
+  "main": "server/src/index.ts",
+  "scripts": {
+    "start": "tsx server/src/index.ts",
+    "dev:server": "tsx watch server/src/index.ts",
+    "dev:client": "cd client && npm run dev",
+    "build:client": "cd client && npm run build",
+    "build": "cd client && npm run build",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "music",
+    "party-game",
+    "socketio",
+    "multiplayer",
+    "react"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^25.3.3",
+    "@types/supertest": "^6.0.2",
+    "@types/uuid": "^10.0.0",
+    "@types/yt-search": "^2.10.3",
+    "socket.io-client": "^4.8.3",
+    "supertest": "^7.2.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "multer": "^2.0.2",
+    "socket.io": "^4.8.3",
+    "uuid": "^13.0.0",
+    "yt-search": "^2.13.1"
+  }
+}
