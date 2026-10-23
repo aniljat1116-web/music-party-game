@@ -11,6 +11,7 @@ import { SongService } from './services/songService.js';
 import { GameService } from './services/gameService.js';
 import { JamendoService } from './services/jamendoService.js';
 import { YouTubeService } from './services/youtubeService.js';
+import { MusicDownloadAgentService } from './services/musicDownloadAgentService.js';
 import { setupSocketHandlers } from './socket/socketHandler.js';
 import { createApp } from './app.js';
 
@@ -30,9 +31,10 @@ export function startServer() {
   const gameService = new GameService(roomRepo, playerRepo, songRepo, gameRepo);
   const jamendoService = new JamendoService();
   const youtubeService = new YouTubeService();
+  const agentService = new MusicDownloadAgentService(songService);
 
   // Create Express App & HTTP Server
-  const app = createApp(roomService, songService, jamendoService, youtubeService);
+  const app = createApp(roomService, songService, jamendoService, youtubeService, agentService);
   const httpServer = http.createServer(app);
 
   // Create Socket.IO server
@@ -40,6 +42,21 @@ export function startServer() {
     cors: {
       origin: '*',
       methods: ['GET', 'POST']
+    }
+  });
+
+  // Wire agent download completion to broadcast room:songs_updated to all room members
+  agentService.setOnJobCompletedCallback((roomCode) => {
+    const roomUpper = roomCode.toUpperCase();
+    const sockets = io.sockets.adapter.rooms.get(roomUpper);
+    if (sockets) {
+      for (const socketId of sockets) {
+        const sock = io.sockets.sockets.get(socketId) as any;
+        if (sock && sock.playerId) {
+          const songs = songService.getRoomSongs(roomUpper, sock.playerId);
+          sock.emit('room:songs_updated', songs);
+        }
+      }
     }
   });
 
@@ -52,7 +69,7 @@ export function startServer() {
     console.log(`💾 SQLite database at: ${CONFIG.DB_PATH}`);
   });
 
-  return { httpServer, io, db, roomService, songService, gameService };
+  return { httpServer, io, db, roomService, songService, gameService, agentService };
 }
 
 // Auto-start when executed directly

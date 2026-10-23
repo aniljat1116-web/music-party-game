@@ -6,6 +6,7 @@ import { RoomService } from './services/roomService.js';
 import { SongService } from './services/songService.js';
 import { JamendoService } from './services/jamendoService.js';
 import { YouTubeService } from './services/youtubeService.js';
+import { MusicDownloadAgentService } from './services/musicDownloadAgentService.js';
 import { createRoomRouter } from './routes/roomRoutes.js';
 import { createAudioRouter } from './routes/audioRoutes.js';
 import { createMusicRouter } from './routes/musicRoutes.js';
@@ -15,7 +16,8 @@ export function createApp(
   roomService: RoomService,
   songService: SongService,
   jamendoService?: JamendoService,
-  youtubeService?: YouTubeService
+  youtubeService?: YouTubeService,
+  agentService?: MusicDownloadAgentService
 ): Express {
   const app = express();
 
@@ -26,7 +28,7 @@ export function createApp(
 
   // API Routes
   app.use('/api/rooms', createRoomRouter(roomService, songService));
-  app.use('/api/rooms', createAudioRouter(songService));
+  app.use('/api/rooms', createAudioRouter(songService, undefined, agentService));
   app.use('/api/music', createMusicRouter(jamendoService));
   app.use('/api/search', createSearchRouter(youtubeService));
 

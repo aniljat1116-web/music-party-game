@@ -6,6 +6,7 @@ import { CONFIG } from '../config.js';
 import { SongService } from '../services/songService.js';
 import { PlayerRepo } from '../db/repositories/playerRepo.js';
 import { createRateLimiter } from '../middleware/rateLimiter.js';
+import { MusicDownloadAgentService } from '../services/musicDownloadAgentService.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -20,9 +21,14 @@ const uploadLimiter = createRateLimiter({
   message: 'Too many song additions. Please wait a minute before adding more tracks.'
 });
 
-export function createAudioRouter(songService: SongService, playerRepo?: PlayerRepo): Router {
+export function createAudioRouter(
+  songService: SongService,
+  playerRepo?: PlayerRepo,
+  agentService?: MusicDownloadAgentService
+): Router {
   const router = Router();
   const players = playerRepo || new PlayerRepo();
+  const downloadAgent = agentService || new MusicDownloadAgentService(songService);
 
   // Upload a local audio file
   router.post('/:roomCode/songs', uploadLimiter, upload.single('audio'), (req: Request, res: Response) => {
@@ -172,6 +178,83 @@ export function createAudioRouter(songService: SongService, playerRepo?: PlayerR
     } catch (err: any) {
       res.status(400).json({ success: false, error: err.message });
     }
+  });
+
+  // Start MusicDownloadAgent YouTube audio conversion & download
+  router.post('/:roomCode/songs/agent-download', uploadLimiter, (req: Request, res: Response) => {
+    try {
+      const authHeader = req.headers.authorization;
+      const token = authHeader?.startsWith('Bearer ')
+        ? authHeader.slice(7)
+        : (req.body.token as string);
+
+      if (!token) {
+        return res.status(401).json({ success: false, error: 'Session token required for agent download.' });
+      }
+
+      const player = players.getPlayerByToken(token);
+      if (!player) {
+        return res.status(401).json({ success: false, error: 'Unauthorized player session.' });
+      }
+
+      const roomCode = String(req.params.roomCode).toUpperCase();
+      if (player.room_code.toUpperCase() !== roomCode) {
+        return res.status(403).json({ success: false, error: 'Access denied: You are not a member of this room.' });
+      }
+
+      const { url } = req.body;
+      if (!url || typeof url !== 'string' || !url.trim()) {
+        return res.status(400).json({ success: false, error: 'A valid YouTube video URL or ID is required.' });
+      }
+
+      const jobResult = downloadAgent.startDownloadJob(token, roomCode, player.id, url.trim());
+
+      res.status(202).json({
+        success: true,
+        ...jobResult
+      });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
+  // SSE Stream for Agent Download Progress
+  router.get('/:roomCode/songs/agent-download/:jobId/progress', (req: Request, res: Response) => {
+    const { jobId } = req.params;
+    const attached = downloadAgent.attachSseClient(String(jobId), res);
+    if (!attached) {
+      return res.status(404).json({ success: false, error: 'Download job not found or expired.' });
+    }
+  });
+
+  // Polling Status fallback for Agent Download
+  router.get('/:roomCode/songs/agent-download/:jobId/status', (req: Request, res: Response) => {
+    const { jobId } = req.params;
+    const job = downloadAgent.getJob(String(jobId));
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'Download job not found.' });
+    }
+
+    res.json({
+      success: true,
+      jobId: job.id,
+      roomCode: job.roomCode,
+      status: job.status,
+      percent: job.percent,
+      message: job.message,
+      data: job.data || null,
+      result: job.result
+        ? {
+            id: job.result.id,
+            title: job.result.title,
+            artist: job.result.artist,
+            duration_seconds: job.result.duration_seconds,
+            file_size: job.result.file_size
+          }
+        : null,
+      error: job.error || null,
+      createdAt: job.createdAt
+    });
   });
 
   // Delete a song

@@ -13,11 +13,12 @@ import {
   FileAudio,
   Trash2,
   Sparkles,
-  ShieldAlert
+  ShieldAlert,
+  Download
 } from 'lucide-react';
 import { useGame } from '../context/GameContext';
 import { formatTime } from '../utils/formatTime';
-import type { JamendoTrackResult, Song, YouTubeSearchResult } from '../types';
+import type { JamendoTrackResult, Song, YouTubeSearchResult, AgentDownloadProgressEvent } from '../types';
 
 interface AddSongModalProps {
   isOpen: boolean;
@@ -32,9 +33,27 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
   mySongs,
   maxSongs = 3
 }) => {
-  const { searchJamendo, addJamendoSong, searchYouTube, addYouTubeSong, uploadSong, addToast } = useGame();
+  const {
+    searchJamendo,
+    addJamendoSong,
+    searchYouTube,
+    addYouTubeSong,
+    startAgentDownload,
+    uploadSong,
+    addToast
+  } = useGame();
 
-  const [activeTab, setActiveTab] = useState<'youtube' | 'jamendo' | 'upload'>('youtube');
+  const [activeTab, setActiveTab] = useState<'agent' | 'youtube' | 'jamendo' | 'upload'>('agent');
+
+  // --- Tab 0: Agent Download State ---
+  const [agentUrl, setAgentUrl] = useState('');
+  const [isAgentDownloading, setIsAgentDownloading] = useState(false);
+  const [agentProgress, setAgentProgress] = useState<{
+    percent: number;
+    status: string;
+    message: string;
+  } | null>(null);
+  const [agentError, setAgentError] = useState<string | null>(null);
 
   // --- Tab 1: YouTube Search State ---
   const [ytQuery, setYtQuery] = useState('');
@@ -137,8 +156,47 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
       setUploadError(null);
       setIsUploading(false);
       setUploadProgress(0);
+      setAgentError(null);
+      setIsAgentDownloading(false);
+      setAgentProgress(null);
     }
   }, [isOpen]);
+
+  const handleAgentDownloadSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const url = agentUrl.trim();
+    if (!url || isAgentDownloading) return;
+
+    if (mySongs.length >= maxSongs) {
+      setAgentError(`You have already added the maximum of ${maxSongs} songs.`);
+      return;
+    }
+
+    setIsAgentDownloading(true);
+    setAgentError(null);
+    setAgentProgress({ percent: 5, status: 'validating', message: 'Validating YouTube link...' });
+
+    const res = await startAgentDownload(url, (ev: AgentDownloadProgressEvent) => {
+      setAgentProgress({
+        percent: ev.percent,
+        status: ev.status,
+        message: ev.message
+      });
+    });
+
+    setIsAgentDownloading(false);
+
+    if (res.success) {
+      setAgentUrl('');
+      setAgentProgress(null);
+      setAgentError(null);
+      if (mySongs.length + 1 >= maxSongs) {
+        onClose();
+      }
+    } else {
+      setAgentError(res.error || 'Agent download failed.');
+    }
+  };
 
   // Preview track audio playback
   const handleTogglePreview = (track: JamendoTrackResult) => {
@@ -448,10 +506,39 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
         <div
           style={{
             display: 'flex',
+            flexWrap: 'wrap',
             borderBottom: '1px solid var(--border-subtle)',
             background: 'rgba(0, 0, 0, 0.2)'
           }}
         >
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('agent');
+              if (previewAudioRef.current) previewAudioRef.current.pause();
+              setPreviewTrackId(null);
+            }}
+            style={{
+              flex: 1,
+              minWidth: '150px',
+              padding: '0.85rem 1rem',
+              background: activeTab === 'agent' ? 'rgba(239, 68, 68, 0.12)' : 'transparent',
+              border: 'none',
+              borderBottom: activeTab === 'agent' ? '2px solid #ef4444' : '2px solid transparent',
+              color: activeTab === 'agent' ? '#f87171' : 'var(--text-secondary)',
+              fontWeight: 700,
+              fontSize: '0.9rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.45rem',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Download size={16} /> Download Audio
+          </button>
+
           <button
             type="button"
             onClick={() => {
@@ -461,22 +548,23 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
             }}
             style={{
               flex: 1,
-              padding: '0.9rem 1.25rem',
-              background: activeTab === 'youtube' ? 'rgba(239, 68, 68, 0.12)' : 'transparent',
+              minWidth: '140px',
+              padding: '0.85rem 1rem',
+              background: activeTab === 'youtube' ? 'rgba(239, 68, 68, 0.08)' : 'transparent',
               border: 'none',
-              borderBottom: activeTab === 'youtube' ? '2px solid #ef4444' : '2px solid transparent',
-              color: activeTab === 'youtube' ? '#f87171' : 'var(--text-secondary)',
+              borderBottom: activeTab === 'youtube' ? '2px solid #dc2626' : '2px solid transparent',
+              color: activeTab === 'youtube' ? '#fca5a5' : 'var(--text-secondary)',
               fontWeight: 700,
-              fontSize: '0.95rem',
+              fontSize: '0.9rem',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '0.55rem',
+              gap: '0.45rem',
               cursor: 'pointer',
               transition: 'all 0.2s ease'
             }}
           >
-            <Search size={17} /> Search YouTube
+            <Search size={16} /> YouTube Stream
           </button>
 
           <button
@@ -488,22 +576,23 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
             }}
             style={{
               flex: 1,
-              padding: '0.9rem 1.25rem',
+              minWidth: '130px',
+              padding: '0.85rem 1rem',
               background: activeTab === 'jamendo' ? 'rgba(6, 182, 212, 0.12)' : 'transparent',
               border: 'none',
               borderBottom: activeTab === 'jamendo' ? '2px solid var(--cyan)' : '2px solid transparent',
               color: activeTab === 'jamendo' ? 'var(--cyan)' : 'var(--text-secondary)',
               fontWeight: 700,
-              fontSize: '0.95rem',
+              fontSize: '0.9rem',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '0.55rem',
+              gap: '0.45rem',
               cursor: 'pointer',
               transition: 'all 0.2s ease'
             }}
           >
-            <Music size={17} /> Jamendo Music
+            <Music size={16} /> Jamendo Music
           </button>
 
           <button
@@ -515,27 +604,209 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
             }}
             style={{
               flex: 1,
-              padding: '0.9rem 1.25rem',
+              minWidth: '140px',
+              padding: '0.85rem 1rem',
               background: activeTab === 'upload' ? 'rgba(139, 92, 246, 0.12)' : 'transparent',
               border: 'none',
               borderBottom: activeTab === 'upload' ? '2px solid var(--primary)' : '2px solid transparent',
               color: activeTab === 'upload' ? 'var(--primary)' : 'var(--text-secondary)',
               fontWeight: 700,
-              fontSize: '0.95rem',
+              fontSize: '0.9rem',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '0.55rem',
+              gap: '0.45rem',
               cursor: 'pointer',
               transition: 'all 0.2s ease'
             }}
           >
-            <Upload size={17} /> Upload From Device
+            <Upload size={16} /> Upload Audio
           </button>
         </div>
 
         {/* Tab Body Container */}
         <div style={{ padding: '1.5rem', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          {/* TAB 0: AGENT YOUTUBE AUDIO DOWNLOAD */}
+          {activeTab === 'agent' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div
+                style={{
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  border: '1px solid rgba(239, 68, 68, 0.25)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '1rem 1.25rem'
+                }}
+              >
+                <h4
+                  style={{
+                    margin: 0,
+                    fontSize: '0.95rem',
+                    fontWeight: 700,
+                    color: '#f87171',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    marginBottom: '0.35rem'
+                  }}
+                >
+                  <Sparkles size={16} /> Automated YouTube Music Downloader
+                </h4>
+                <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                  Paste a YouTube video URL or ID. The agent will automatically convert and extract audio directly into your room playlist as a verified, high-fidelity local track.
+                </p>
+              </div>
+
+              {/* Form */}
+              <form onSubmit={handleAgentDownloadSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                <div style={{ display: 'flex', gap: '0.65rem' }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Paste YouTube link (e.g. https://www.youtube.com/watch?v=... or https://youtu.be/...)"
+                    value={agentUrl}
+                    onChange={(e) => {
+                      setAgentUrl(e.target.value);
+                      if (agentError) setAgentError(null);
+                    }}
+                    disabled={isAgentDownloading}
+                    style={{ height: '46px', flex: 1 }}
+                    autoFocus
+                  />
+                  <button
+                    type="submit"
+                    className="btn"
+                    disabled={!agentUrl.trim() || isAgentDownloading || mySongs.length >= maxSongs}
+                    style={{
+                      minWidth: '130px',
+                      height: '46px',
+                      background: isAgentDownloading
+                        ? 'rgba(239, 68, 68, 0.5)'
+                        : 'linear-gradient(135deg, #ef4444, #dc2626)',
+                      color: '#fff',
+                      border: 'none',
+                      fontWeight: 700,
+                      boxShadow: '0 0 15px rgba(239, 68, 68, 0.35)'
+                    }}
+                  >
+                    {isAgentDownloading ? (
+                      <>
+                        <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
+                        <span>Downloading...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download size={18} />
+                        <span>Add Song</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {mySongs.length >= maxSongs && (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--amber)' }}>
+                    You have reached the maximum song limit ({maxSongs}/{maxSongs} tracks).
+                  </div>
+                )}
+              </form>
+
+              {/* Live Progress Bar and Status Messages */}
+              {isAgentDownloading && agentProgress && (
+                <div
+                  className="card card-glow"
+                  style={{
+                    background: 'rgba(15, 23, 42, 0.8)',
+                    border: '1px solid rgba(239, 68, 68, 0.35)',
+                    padding: '1.25rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.75rem'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <Loader2 size={16} color="#ef4444" style={{ animation: 'spin 1.2s linear infinite' }} />
+                      <span
+                        style={{
+                          fontWeight: 700,
+                          fontSize: '0.9rem',
+                          color: '#f87171',
+                          textTransform: 'capitalize'
+                        }}
+                      >
+                        Phase: {agentProgress.status.replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontWeight: 800,
+                        color: 'var(--cyan)',
+                        fontSize: '0.95rem'
+                      }}
+                    >
+                      {agentProgress.percent}%
+                    </span>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '8px',
+                      borderRadius: '4px',
+                      background: 'rgba(255, 255, 255, 0.1)',
+                      overflow: 'hidden'
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${agentProgress.percent}%`,
+                        height: '100%',
+                        background: 'linear-gradient(90deg, #ef4444, #f59e0b, var(--cyan))',
+                        transition: 'width 0.3s ease',
+                        boxShadow: '0 0 10px rgba(239, 68, 68, 0.5)'
+                      }}
+                    />
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: '0.825rem',
+                      color: 'var(--text-secondary)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.4rem'
+                    }}
+                  >
+                    <span>{agentProgress.message}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Error Banner */}
+              {agentError && (
+                <div
+                  className="error-banner"
+                  style={{
+                    margin: 0,
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    gap: '0.5rem'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <AlertTriangle size={18} color="#ef4444" style={{ flexShrink: 0 }} />
+                    <span style={{ fontWeight: 600 }}>{agentError}</span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Note: If the external conversion service is temporarily rate-limited, you can use the{' '}
+                    <strong>YouTube Stream</strong> tab for direct playback or the{' '}
+                    <strong>Upload Audio</strong> tab to upload a local audio file.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
           {/* TAB 1: YOUTUBE MUSIC SEARCH */}
           {activeTab === 'youtube' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>

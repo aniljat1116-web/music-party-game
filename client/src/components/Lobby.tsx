@@ -619,6 +619,7 @@ export const Lobby: React.FC = () => {
                   const isPreviewing = previewingSongId === s.id;
                   const isJamendo = s.source_type === 'jamendo';
                   const isYouTube = s.source_type === 'youtube';
+                  const isAgentDownload = s.source_type === 'agent_download';
 
                   return (
                     <div
@@ -714,7 +715,9 @@ export const Lobby: React.FC = () => {
                               {s.artist ? `${s.artist} • ` : ''}
                               {isJamendo || isYouTube
                                 ? `${formatTime(s.duration_seconds || 30)}`
-                                : `${(s.file_size / (1024 * 1024)).toFixed(1)} MB`}
+                                : isAgentDownload
+                                  ? `${formatTime(s.duration_seconds || 30)} • ${(s.file_size / (1024 * 1024)).toFixed(1)} MB`
+                                  : `${(s.file_size / (1024 * 1024)).toFixed(1)} MB`}
                             </span>
                             <span
                               className="badge"
@@ -723,22 +726,28 @@ export const Lobby: React.FC = () => {
                                 padding: '0.15rem 0.45rem',
                                 background: isYouTube
                                   ? 'rgba(239, 68, 68, 0.15)'
-                                  : isJamendo
-                                    ? 'rgba(6, 182, 212, 0.15)'
-                                    : 'rgba(139, 92, 246, 0.15)',
+                                  : isAgentDownload
+                                    ? 'rgba(245, 158, 11, 0.15)'
+                                    : isJamendo
+                                      ? 'rgba(6, 182, 212, 0.15)'
+                                      : 'rgba(139, 92, 246, 0.15)',
                                 color: isYouTube
                                   ? '#f87171'
-                                  : isJamendo
-                                    ? 'var(--cyan)'
-                                    : 'var(--primary)',
+                                  : isAgentDownload
+                                    ? '#fbbf24'
+                                    : isJamendo
+                                      ? 'var(--cyan)'
+                                      : 'var(--primary)',
                                 border: isYouTube
                                   ? '1px solid rgba(239, 68, 68, 0.35)'
-                                  : isJamendo
-                                    ? '1px solid var(--border-cyan)'
-                                    : '1px solid var(--border-accent)'
+                                  : isAgentDownload
+                                    ? '1px solid rgba(245, 158, 11, 0.35)'
+                                    : isJamendo
+                                      ? '1px solid var(--border-cyan)'
+                                      : '1px solid var(--border-accent)'
                               }}
                             >
-                              {isYouTube ? 'YouTube' : isJamendo ? 'Jamendo' : 'Upload'}
+                              {isYouTube ? 'YouTube' : isAgentDownload ? 'Downloaded Audio' : isJamendo ? 'Jamendo' : 'Upload'}
                             </span>
                           </div>
                         </div>

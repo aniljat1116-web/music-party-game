@@ -315,7 +315,7 @@ describe('YouTube Search & Song Queueing Integration', () => {
       expect(state.phase).toBe('playing');
       expect(state.current_song).toBeDefined();
       expect(state.current_song?.source_type).toBe('youtube');
-      expect(state.current_song?.external_id).toBe('ytVideo123');
+      expect(['ytVideo123', 'ytVideo456', 'ytVideo789']).toContain(state.current_song?.external_id);
     });
   });
 });

@@ -1,7 +1,29 @@
 export type RoomStatus = 'lobby' | 'playing' | 'finished';
 export type GamePhase = 'playing' | 'discussing' | 'voting' | 'revealed';
 export type GameMode = 'who_added' | 'guess_song';
-export type SongSourceType = 'upload' | 'jamendo' | 'youtube';
+export type SongSourceType = 'upload' | 'jamendo' | 'youtube' | 'agent_download';
+
+export type AgentDownloadPhase =
+  | 'validating'
+  | 'launching_browser'
+  | 'navigating'
+  | 'submitting_url'
+  | 'processing'
+  | 'downloading'
+  | 'verifying'
+  | 'completed'
+  | 'error';
+
+export interface AgentDownloadProgressEvent {
+  jobId: string;
+  roomCode?: string;
+  status: AgentDownloadPhase;
+  percent: number;
+  message: string;
+  data?: any;
+  result?: any;
+  error?: string | null;
+}
 
 export interface Room {
   code: string;

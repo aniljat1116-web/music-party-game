@@ -9,6 +9,7 @@ build/
 
 # Audio uploads & database
 uploads/
+.agent_temp/
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal

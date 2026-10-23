@@ -283,8 +283,8 @@ export class SongService {
 
     this.songRepo.deleteSong(songId);
 
-    // Remove from disk if it was an uploaded file
-    if (song.source_type === 'upload') {
+    // Remove from disk if it was an uploaded file or agent downloaded file
+    if (song.source_type === 'upload' || song.source_type === 'agent_download') {
       const filePath = path.join(this.uploadsDir, song.stored_filename);
       if (fs.existsSync(filePath)) {
         try {
@@ -294,6 +294,98 @@ export class SongService {
         }
       }
     }
+  }
+
+  addAgentDownloadedSong(
+    sessionToken: string,
+    fileDetails: {
+      sourceFilePath: string;
+      fileSizeBytes: number;
+      mimeType: string;
+      title: string;
+      artist?: string | null;
+      durationSeconds: number;
+      videoId: string;
+      thumbnailUrl?: string | null;
+      ext?: string;
+    }
+  ): Song {
+    const player = this.playerRepo.getPlayerByToken(sessionToken);
+    if (!player) throw new Error('Unauthorized session.');
+
+    const room = this.roomRepo.getRoomByCode(player.room_code);
+    if (!room) throw new Error('Room not found.');
+    if (room.status !== 'lobby') {
+      throw new Error('Cannot add songs once the game has started.');
+    }
+
+    const existingSongs = this.songRepo.getSongsByUploader(player.id);
+    if (existingSongs.length >= CONFIG.MAX_SONGS_PER_PLAYER) {
+      throw new Error(`You have reached the maximum of ${CONFIG.MAX_SONGS_PER_PLAYER} songs.`);
+    }
+
+    const cleanVideoId = (fileDetails.videoId || '').trim();
+    if (!cleanVideoId) {
+      throw new Error('Video ID is required.');
+    }
+
+    // Check if video is already added in this room
+    if (this.songRepo.hasExternalSongInRoom(room.code, cleanVideoId)) {
+      throw new Error('This YouTube video has already been added to the room.');
+    }
+
+    if (!fs.existsSync(fileDetails.sourceFilePath)) {
+      throw new Error('Downloaded audio file missing on server.');
+    }
+
+    const stat = fs.statSync(fileDetails.sourceFilePath);
+    if (stat.size === 0) {
+      throw new Error('Downloaded audio file is empty.');
+    }
+
+    if (stat.size > CONFIG.MAX_FILE_SIZE_BYTES) {
+      throw new Error(`File is too large (${(stat.size / (1024 * 1024)).toFixed(1)} MB). Maximum allowed size is 20 MB.`);
+    }
+
+    const rawExt = fileDetails.ext || path.extname(fileDetails.sourceFilePath).replace(/^\./, '') || 'm4a';
+    const ext = rawExt.startsWith('.') ? rawExt.toLowerCase() : `.${rawExt.toLowerCase()}`;
+
+    if (!CONFIG.ALLOWED_EXTENSIONS.includes(ext)) {
+      throw new Error(`Invalid file format "${ext}". Supported formats: MP3, WAV, OGG, M4A, AAC.`);
+    }
+
+    const title = (fileDetails.title || 'YouTube Track').trim();
+    const artist = (fileDetails.artist || 'YouTube').trim();
+    const originalFilename = `${title}${ext}`;
+
+    const songId = uuidv4();
+    const storedFilename = `${songId}${ext}`;
+    const destinationPath = path.join(this.uploadsDir, storedFilename);
+
+    // Safely move/copy file to permanent uploads directory
+    fs.copyFileSync(fileDetails.sourceFilePath, destinationPath);
+    try {
+      fs.unlinkSync(fileDetails.sourceFilePath);
+    } catch {}
+
+    const song = this.songRepo.createSong(
+      songId,
+      room.code,
+      player.id,
+      originalFilename,
+      storedFilename,
+      stat.size,
+      fileDetails.mimeType || 'audio/mp4',
+      fileDetails.durationSeconds || 30,
+      title,
+      artist,
+      'agent_download',
+      cleanVideoId,
+      `https://www.youtube.com/watch?v=${cleanVideoId}`,
+      fileDetails.thumbnailUrl || `https://i.ytimg.com/vi/${cleanVideoId}/hqdefault.jpg`
+    );
+
+    return song;
   }
 
   getSongForPlayback(

@@ -41,6 +41,10 @@ interface GameContextType {
   addJamendoSong: (track: JamendoTrackResult) => Promise<{ success: boolean; error?: string }>;
   searchYouTube: (query: string) => Promise<{ success: boolean; results?: YouTubeSearchResult[]; error?: string }>;
   addYouTubeSong: (video: { videoId: string; title: string; duration?: string; thumbnail?: string }) => Promise<{ success: boolean; error?: string }>;
+  startAgentDownload: (
+    url: string,
+    onProgress?: (event: import('../types').AgentDownloadProgressEvent) => void
+  ) => Promise<{ success: boolean; error?: string; song?: any; jobId?: string }>;
   deleteSong: (songId: string) => Promise<boolean>;
   startGame: () => void;
   submitVote: (votedPlayerId: string) => void;
@@ -545,6 +549,85 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // Start MusicDownloadAgent download for YouTube audio
+  const startAgentDownload = async (
+    url: string,
+    onProgress?: (event: import('../types').AgentDownloadProgressEvent) => void
+  ): Promise<{ success: boolean; error?: string; song?: any; jobId?: string }> => {
+    if (!sessionToken || !currentRoom) {
+      return { success: false, error: 'No active session or room found.' };
+    }
+
+    try {
+      const res = await fetch(`/api/rooms/${currentRoom.code}/songs/agent-download`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionToken}`
+        },
+        body: JSON.stringify({ url })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        const errorMsg = data.error || 'Failed to start download job.';
+        return { success: false, error: errorMsg };
+      }
+
+      const jobId = data.jobId;
+
+      return new Promise((resolve) => {
+        const eventSource = new EventSource(
+          `/api/rooms/${currentRoom.code}/songs/agent-download/${jobId}/progress`
+        );
+
+        eventSource.onmessage = (e) => {
+          try {
+            const ev = JSON.parse(e.data);
+            if (onProgress) onProgress(ev);
+
+            if (ev.status === 'completed') {
+              eventSource.close();
+              if (socketRef.current) {
+                socketRef.current.emit('room:refresh_songs');
+              }
+              addToast(ev.message || 'Song downloaded and added to room playlist!', 'success');
+              resolve({ success: true, song: ev.result, jobId });
+            } else if (ev.status === 'error') {
+              eventSource.close();
+              const err = ev.error || ev.message || 'Download failed.';
+              resolve({ success: false, error: err, jobId });
+            }
+          } catch (parseErr) {
+            console.error('Error parsing SSE event:', parseErr);
+          }
+        };
+
+        eventSource.onerror = () => {
+          eventSource.close();
+          // Fallback to polling status if SSE connection dropped
+          fetch(`/api/rooms/${currentRoom.code}/songs/agent-download/${jobId}/status`)
+            .then((r) => r.json())
+            .then((statusData) => {
+              if (statusData.status === 'completed') {
+                if (socketRef.current) socketRef.current.emit('room:refresh_songs');
+                resolve({ success: true, song: statusData.result, jobId });
+              } else if (statusData.status === 'error') {
+                resolve({ success: false, error: statusData.error || statusData.message, jobId });
+              } else {
+                resolve({ success: false, error: 'Connection lost to download agent.', jobId });
+              }
+            })
+            .catch(() => {
+              resolve({ success: false, error: 'Connection lost to download agent.', jobId });
+            });
+        };
+      });
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Network error initiating agent download.' };
+    }
+  };
+
   // Delete Song
   const deleteSong = async (songId: string): Promise<boolean> => {
     if (!sessionToken || !currentRoom) return false;
@@ -673,6 +756,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         addJamendoSong,
         searchYouTube,
         addYouTubeSong,
+        startAgentDownload,
         deleteSong,
         startGame,
         submitVote,
