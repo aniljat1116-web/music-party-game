@@ -13,7 +13,9 @@ import {
   formatFileSize,
   findBrowserExecutable,
   resolveBrowserExecutable,
-  getSanitizedBrowserName
+  getSanitizedBrowserName,
+  getMemoryStats,
+  logMemory
 } from './agentUtils.js';
 import { AgentDownloadPhase, AgentDownloadProgressEvent, Song } from '../types/index.js';
 
@@ -30,6 +32,11 @@ export interface BrowserStatus {
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0';
 
+export interface SseClientWrapper {
+  res: Response;
+  heartbeatTimer: NodeJS.Timeout;
+}
+
 export interface DownloadJob {
   id: string;
   roomCode: string;
@@ -44,7 +51,7 @@ export interface DownloadJob {
   result?: Song | null;
   error?: string | null;
   createdAt: number;
-  sseClients: Response[];
+  sseClients: SseClientWrapper[];
   tempFiles: string[];
 }
 
@@ -54,6 +61,10 @@ export class MusicDownloadAgentService {
   private jobs = new Map<string, DownloadJob>();
   private activeRoomVideoJobs = new Map<string, string>(); // `${roomCode}:${videoId}` -> jobId
   private onJobCompletedCallback?: (roomCode: string, song: Song) => void;
+  private maxConcurrentJobs = 1;
+  private maxQueueSize = 5;
+  private runningJobsCount = 0;
+  private jobQueue: string[] = [];
   private browserStatus: BrowserStatus = {
     checked: false,
     available: false,
@@ -80,8 +91,8 @@ export class MusicDownloadAgentService {
   }
 
   /**
-   * Diagnostic startup check: Verifies browser executable exists and can launch headless.
-   * Safe: Logs concise diagnostic results and avoids crashing the application.
+   * Diagnostic startup check: Verifies browser executable exists without launching heavy Chromium at boot.
+   * Chromium is launched strictly on-demand when a download job executes to conserve Render memory.
    */
   public async verifyBrowserReadiness(): Promise<BrowserStatus> {
     try {
@@ -99,23 +110,8 @@ export class MusicDownloadAgentService {
       }
 
       const browserName = getSanitizedBrowserName(execPath);
-
-      // Safe test launch to verify browser process can spawn with sandbox flags
-      const testBrowser = await puppeteer.launch({
-        executablePath: execPath,
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--no-first-run',
-          '--no-zygote'
-        ]
-      });
-      await testBrowser.close();
-
-      console.log(`🚀 [MusicDownloadAgent] Headless browser verified successfully (${browserName}).`);
+      logMemory('Startup-BrowserCheck');
+      console.log(`🚀 [MusicDownloadAgent] Browser binary detected and ready (${browserName}). Will launch on demand.`);
       this.browserStatus = {
         checked: true,
         available: true,
@@ -124,8 +120,8 @@ export class MusicDownloadAgentService {
       };
       return this.browserStatus;
     } catch (err: any) {
-      const errMsg = err?.message || 'Failed to launch headless browser.';
-      console.warn(`⚠️ [MusicDownloadAgent] Browser launch diagnostic failed: ${errMsg}. Downloader feature will be unavailable.`);
+      const errMsg = err?.message || 'Failed to verify browser executable.';
+      console.warn(`⚠️ [MusicDownloadAgent] Browser check failed: ${errMsg}. Downloader feature will be unavailable.`);
       this.browserStatus = {
         checked: true,
         available: false,
@@ -134,6 +130,17 @@ export class MusicDownloadAgentService {
       };
       return this.browserStatus;
     }
+  }
+
+  public getDiagnostics() {
+    return {
+      activeJobs: this.runningJobsCount,
+      queuedJobs: this.jobQueue.length,
+      maxConcurrent: this.maxConcurrentJobs,
+      maxQueueSize: this.maxQueueSize,
+      browser: this.browserStatus,
+      memory: getMemoryStats()
+    };
   }
 
   public getBrowserStatus(): BrowserStatus {
@@ -216,11 +223,22 @@ export class MusicDownloadAgentService {
 
         const outStream = fs.createWriteStream(targetPath);
         for (const part of tempParts) {
-          const partBuffer = fs.readFileSync(part);
-          outStream.write(partBuffer);
-          try {
-            fs.unlinkSync(part);
-          } catch {}
+          await new Promise<void>((resolvePart, rejectPart) => {
+            const inStream = fs.createReadStream(part);
+            inStream.pipe(outStream, { end: false });
+            inStream.on('end', () => {
+              try {
+                fs.unlinkSync(part);
+              } catch {}
+              resolvePart();
+            });
+            inStream.on('error', (err) => {
+              try {
+                fs.unlinkSync(part);
+              } catch {}
+              rejectPart(err);
+            });
+          });
           job.tempFiles = job.tempFiles.filter((p) => p !== part);
         }
         outStream.end();
@@ -295,7 +313,13 @@ export class MusicDownloadAgentService {
 
     job.sseClients.forEach((client) => {
       try {
-        client.write(sseData);
+        if (!client.res.writableEnded && !client.res.destroyed) {
+          client.res.write(sseData);
+          if (job.status === 'completed' || job.status === 'error') {
+            clearInterval(client.heartbeatTimer);
+            client.res.end();
+          }
+        }
       } catch {}
     });
   }
@@ -325,6 +349,7 @@ export class MusicDownloadAgentService {
     let browser: Browser | null = null;
     const startTime = Date.now();
     let tempTargetFilePath: string | null = null;
+    logMemory(`Job-${job.id}-Start`);
 
     try {
       browser = await puppeteer.launch({
@@ -335,10 +360,22 @@ export class MusicDownloadAgentService {
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
+          '--disable-software-rasterizer',
+          '--mute-audio',
+          '--disable-extensions',
+          '--disable-background-networking',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-breakpad',
+          '--disable-component-extensions-with-background-pages',
+          '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
+          '--disable-ipc-flooding-protection',
+          '--disable-renderer-backgrounding',
           '--no-first-run',
           '--no-zygote',
           '--disable-blink-features=AutomationControlled',
-          '--window-size=1280,800'
+          '--window-size=1024,768',
+          '--js-flags=--max-old-space-size=128'
         ]
       });
 
@@ -611,7 +648,110 @@ export class MusicDownloadAgentService {
         }
       });
       job.tempFiles = [];
+      logMemory(`Job-${job.id}-End`);
     }
+  }
+
+  /**
+   * Internal job execution runner with resource limits and cleanup.
+   */
+  private runJobWorkflow(job: DownloadJob): void {
+    const roomVideoKey = `${job.roomCode.toUpperCase()}:${job.videoId}`;
+
+    // Timeout watchdog
+    const timeoutHandle = setTimeout(() => {
+      if (job.status !== 'completed' && job.status !== 'error') {
+        const timeoutMsg = `Download timed out after ${Math.round(CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS / 1000)} seconds.`;
+        job.status = 'error';
+        job.error = timeoutMsg;
+        this.emitProgress(job, { phase: 'error', percent: job.percent, message: timeoutMsg });
+        this.activeRoomVideoJobs.delete(roomVideoKey);
+        job.sseClients.forEach((client) => {
+          clearInterval(client.heartbeatTimer);
+          try {
+            if (!client.res.writableEnded && !client.res.destroyed) {
+              client.res.end();
+            }
+          } catch {}
+        });
+        job.sseClients = [];
+      }
+    }, CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS);
+
+    (async () => {
+      try {
+        await this.executeDownloadWorkflow(job);
+      } catch (err: any) {
+        clearTimeout(timeoutHandle);
+        job.status = 'error';
+        job.error = err.message || 'An unexpected error occurred during music download.';
+        this.emitProgress(job, {
+          phase: 'error',
+          percent: job.percent,
+          message: job.error!
+        });
+      } finally {
+        clearTimeout(timeoutHandle);
+        this.activeRoomVideoJobs.delete(roomVideoKey);
+
+        // End SSE connections
+        job.sseClients.forEach((client) => {
+          clearInterval(client.heartbeatTimer);
+          try {
+            if (!client.res.writableEnded && !client.res.destroyed) {
+              client.res.end();
+            }
+          } catch {}
+        });
+        job.sseClients = [];
+
+        // Decrement running job count and process next queued item
+        this.runningJobsCount = Math.max(0, this.runningJobsCount - 1);
+        this.processNextQueueItem();
+
+        // Clean up expired jobs (older than 15 minutes) to prevent memory leak
+        const now = Date.now();
+        for (const [id, j] of this.jobs.entries()) {
+          if ((j.status === 'completed' || j.status === 'error') && now - j.createdAt > 15 * 60 * 1000) {
+            this.jobs.delete(id);
+          }
+        }
+      }
+    })();
+  }
+
+  /**
+   * Process the next queued download job if capacity allows.
+   */
+  private processNextQueueItem(): void {
+    if (this.runningJobsCount >= this.maxConcurrentJobs || this.jobQueue.length === 0) {
+      return;
+    }
+
+    const nextJobId = this.jobQueue.shift();
+    if (!nextJobId) return;
+
+    const nextJob = this.jobs.get(nextJobId);
+    if (!nextJob || nextJob.status === 'completed' || nextJob.status === 'error') {
+      this.processNextQueueItem();
+      return;
+    }
+
+    this.runningJobsCount++;
+    this.runJobWorkflow(nextJob);
+
+    // Update position for remaining queued jobs
+    this.jobQueue.forEach((queuedId, index) => {
+      const qJob = this.jobs.get(queuedId);
+      if (qJob && qJob.status === 'queued') {
+        const pos = index + 1;
+        this.emitProgress(qJob, {
+          phase: 'queued',
+          percent: 2,
+          message: `Download queued (position ${pos} of ${this.jobQueue.length}). Waiting for active job...`
+        });
+      }
+    });
   }
 
   /**
@@ -647,6 +787,8 @@ export class MusicDownloadAgentService {
     }
 
     const jobId = `agent_job_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const isQueued = this.runningJobsCount >= this.maxConcurrentJobs;
+
     const job: DownloadJob = {
       id: jobId,
       roomCode: roomCode.toUpperCase(),
@@ -654,59 +796,38 @@ export class MusicDownloadAgentService {
       sessionToken,
       videoId,
       url: `https://www.youtube.com/watch?v=${videoId}`,
-      status: 'validating',
-      percent: 5,
-      message: 'Job queued and validated.',
+      status: isQueued ? 'queued' : 'validating',
+      percent: isQueued ? 2 : 5,
+      message: isQueued
+        ? `Download queued (position ${this.jobQueue.length + 1}). Waiting for active download to complete...`
+        : 'Job queued and validated.',
       createdAt: Date.now(),
       sseClients: [],
       tempFiles: []
     };
 
+    // If active job is running, check queue limit
+    if (isQueued) {
+      if (this.jobQueue.length >= this.maxQueueSize) {
+        throw new Error(
+          `Server download queue is currently full (${this.maxQueueSize} jobs pending). Please wait a moment or use the direct YouTube Stream tab.`
+        );
+      }
+      this.jobs.set(jobId, job);
+      this.activeRoomVideoJobs.set(roomVideoKey, jobId);
+      this.jobQueue.push(jobId);
+      return {
+        jobId,
+        status: 'queued',
+        message: job.message
+      };
+    }
+
+    // Run immediately when below concurrency limit
     this.jobs.set(jobId, job);
     this.activeRoomVideoJobs.set(roomVideoKey, jobId);
-
-    // Timeout watchdog
-    const timeoutHandle = setTimeout(() => {
-      if (job.status !== 'completed' && job.status !== 'error') {
-        const timeoutMsg = `Download timed out after ${Math.round(CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS / 1000)} seconds.`;
-        job.status = 'error';
-        job.error = timeoutMsg;
-        this.emitProgress(job, { phase: 'error', percent: job.percent, message: timeoutMsg });
-        this.activeRoomVideoJobs.delete(roomVideoKey);
-        job.sseClients.forEach((c) => {
-          try {
-            c.end();
-          } catch {}
-        });
-        job.sseClients = [];
-      }
-    }, CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS);
-
-    // Asynchronously run workflow
-    (async () => {
-      try {
-        await this.executeDownloadWorkflow(job);
-      } catch (err: any) {
-        clearTimeout(timeoutHandle);
-        job.status = 'error';
-        job.error = err.message || 'An unexpected error occurred during music download.';
-        this.emitProgress(job, {
-          phase: 'error',
-          percent: job.percent,
-          message: job.error!
-        });
-      } finally {
-        clearTimeout(timeoutHandle);
-        this.activeRoomVideoJobs.delete(roomVideoKey);
-        // End SSE connections
-        job.sseClients.forEach((client) => {
-          try {
-            client.end();
-          } catch {}
-        });
-        job.sseClients = [];
-      }
-    })();
+    this.runningJobsCount++;
+    this.runJobWorkflow(job);
 
     return { jobId, status: 'started', message: 'Download initiated.' };
   }
@@ -718,9 +839,11 @@ export class MusicDownloadAgentService {
     const job = this.jobs.get(jobId);
     if (!job) return false;
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    // Set appropriate headers per production reverse proxy requirements
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
 
     // Send immediate initial state
@@ -748,10 +871,29 @@ export class MusicDownloadAgentService {
       return true;
     }
 
-    job.sseClients.push(res);
+    // 10-second heartbeat to prevent cloud reverse proxy timeouts
+    const heartbeatTimer = setInterval(() => {
+      if (!res.writableEnded && !res.destroyed) {
+        try {
+          res.write(': ping\n\n');
+        } catch {
+          clearInterval(heartbeatTimer);
+        }
+      } else {
+        clearInterval(heartbeatTimer);
+      }
+    }, 10000);
+
+    const clientWrapper: SseClientWrapper = {
+      res,
+      heartbeatTimer
+    };
+
+    job.sseClients.push(clientWrapper);
 
     res.on('close', () => {
-      job.sseClients = job.sseClients.filter((c) => c !== res);
+      clearInterval(heartbeatTimer);
+      job.sseClients = job.sseClients.filter((c) => c !== clientWrapper);
     });
 
     return true;

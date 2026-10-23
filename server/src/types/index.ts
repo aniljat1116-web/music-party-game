@@ -4,6 +4,7 @@ export type GameMode = 'who_added' | 'guess_song';
 export type SongSourceType = 'upload' | 'jamendo' | 'youtube' | 'agent_download';
 
 export type AgentDownloadPhase =
+  | 'queued'
   | 'validating'
   | 'launching_browser'
   | 'navigating'

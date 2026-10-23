@@ -577,51 +577,159 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const jobId = data.jobId;
 
       return new Promise((resolve) => {
-        const eventSource = new EventSource(
-          `/api/rooms/${currentRoom.code}/songs/agent-download/${jobId}/progress`
-        );
+        let isDone = false;
+        let eventSource: EventSource | null = null;
+        let pollTimer: any = null;
+        let isPollingActive = false;
+        let pollAbortController: AbortController | null = null;
+        let consecutivePollErrors = 0;
 
-        eventSource.onmessage = (e) => {
-          try {
-            const ev = JSON.parse(e.data);
-            if (onProgress) onProgress(ev);
-
-            if (ev.status === 'completed') {
+        const cleanup = () => {
+          if (eventSource) {
+            try {
               eventSource.close();
-              if (socketRef.current) {
-                socketRef.current.emit('room:refresh_songs');
-              }
-              addToast(ev.message || 'Song downloaded and added to room playlist!', 'success');
-              resolve({ success: true, song: ev.result, jobId });
-            } else if (ev.status === 'error') {
-              eventSource.close();
-              const err = ev.error || ev.message || 'Download failed.';
-              resolve({ success: false, error: err, jobId });
-            }
-          } catch (parseErr) {
-            console.error('Error parsing SSE event:', parseErr);
+            } catch {}
+            eventSource = null;
+          }
+          if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+          }
+          if (pollAbortController) {
+            try {
+              pollAbortController.abort();
+            } catch {}
+            pollAbortController = null;
           }
         };
 
-        eventSource.onerror = () => {
-          eventSource.close();
-          // Fallback to polling status if SSE connection dropped
-          fetch(`/api/rooms/${currentRoom.code}/songs/agent-download/${jobId}/status`)
-            .then((r) => r.json())
-            .then((statusData) => {
-              if (statusData.status === 'completed') {
-                if (socketRef.current) socketRef.current.emit('room:refresh_songs');
-                resolve({ success: true, song: statusData.result, jobId });
-              } else if (statusData.status === 'error') {
-                resolve({ success: false, error: statusData.error || statusData.message, jobId });
-              } else {
-                resolve({ success: false, error: 'Connection lost to download agent.', jobId });
-              }
-            })
-            .catch(() => {
-              resolve({ success: false, error: 'Connection lost to download agent.', jobId });
-            });
+        const finish = (result: { success: boolean; error?: string; song?: any; jobId?: string }) => {
+          if (isDone) return;
+          isDone = true;
+          cleanup();
+          resolve(result);
         };
+
+        const pollStatus = async () => {
+          if (isDone) return;
+
+          try {
+            pollAbortController = new AbortController();
+            const statusRes = await fetch(
+              `/api/rooms/${currentRoom.code}/songs/agent-download/${jobId}/status`,
+              { signal: pollAbortController.signal }
+            );
+
+            if (statusRes.status === 404) {
+              finish({ success: false, error: 'Download job not found or expired.', jobId });
+              return;
+            }
+
+            if (!statusRes.ok) {
+              throw new Error(`HTTP ${statusRes.status}`);
+            }
+
+            const statusData = await statusRes.json();
+            consecutivePollErrors = 0;
+
+            if (statusData.status === 'completed') {
+              if (socketRef.current) socketRef.current.emit('room:refresh_songs');
+              addToast(statusData.message || 'Song downloaded and added to room playlist!', 'success');
+              finish({ success: true, song: statusData.result, jobId });
+              return;
+            }
+
+            if (statusData.status === 'error') {
+              finish({
+                success: false,
+                error: statusData.error || statusData.message || 'Download failed.',
+                jobId
+              });
+              return;
+            }
+
+            // In progress or queued: update progress UI
+            if (onProgress) {
+              onProgress({
+                jobId: statusData.jobId,
+                roomCode: statusData.roomCode,
+                status: statusData.status,
+                percent: statusData.percent,
+                message: statusData.message,
+                data: statusData.data || null,
+                result: statusData.result || null,
+                error: statusData.error || null
+              });
+            }
+
+            // Schedule next poll in 2 seconds
+            if (!isDone) {
+              pollTimer = setTimeout(pollStatus, 2000);
+            }
+          } catch (err: any) {
+            if (isDone) return;
+            if (err?.name === 'AbortError') return;
+
+            consecutivePollErrors++;
+            // Allow up to 5 consecutive network errors (~10 seconds) before aborting
+            if (consecutivePollErrors >= 5) {
+              finish({
+                success: false,
+                error: 'Connection lost to download agent after multiple retries.',
+                jobId
+              });
+              return;
+            }
+
+            pollTimer = setTimeout(pollStatus, 2000);
+          }
+        };
+
+        const startPollingFallback = () => {
+          if (isDone || isPollingActive) return;
+          isPollingActive = true;
+          if (eventSource) {
+            try {
+              eventSource.close();
+            } catch {}
+            eventSource = null;
+          }
+          pollStatus();
+        };
+
+        try {
+          eventSource = new EventSource(
+            `/api/rooms/${currentRoom.code}/songs/agent-download/${jobId}/progress`
+          );
+
+          eventSource.onmessage = (e) => {
+            if (isDone) return;
+            try {
+              const ev = JSON.parse(e.data);
+              if (onProgress) onProgress(ev);
+
+              if (ev.status === 'completed') {
+                if (socketRef.current) {
+                  socketRef.current.emit('room:refresh_songs');
+                }
+                addToast(ev.message || 'Song downloaded and added to room playlist!', 'success');
+                finish({ success: true, song: ev.result, jobId });
+              } else if (ev.status === 'error') {
+                const err = ev.error || ev.message || 'Download failed.';
+                finish({ success: false, error: err, jobId });
+              }
+            } catch (parseErr) {
+              console.error('Error parsing SSE event:', parseErr);
+            }
+          };
+
+          eventSource.onerror = () => {
+            // When SSE drops, smoothly transition to polling fallback instead of failing immediately
+            startPollingFallback();
+          };
+        } catch {
+          startPollingFallback();
+        }
       });
     } catch (err: any) {
       return { success: false, error: err.message || 'Network error initiating agent download.' };

@@ -67,6 +67,8 @@ export function startServer() {
     console.log(`🎵 Music Party Game server running at http://localhost:${CONFIG.PORT}`);
     console.log(`📁 Audio uploads stored at: ${CONFIG.UPLOADS_DIR}`);
     console.log(`💾 SQLite database at: ${CONFIG.DB_PATH}`);
+    const mem = process.memoryUsage();
+    console.log(`📊 [Memory][Startup] RSS: ${(mem.rss / 1024 / 1024).toFixed(1)}MB | Heap: ${(mem.heapUsed / 1024 / 1024).toFixed(1)}/${(mem.heapTotal / 1024 / 1024).toFixed(1)}MB`);
   });
 
   // Safe startup diagnostic: Verify headless browser can launch for downloader agent

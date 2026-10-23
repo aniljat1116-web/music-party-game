@@ -35,9 +35,11 @@ export function createApp(
   // Health check
   app.get('/api/health', (_req: Request, res: Response) => {
     const downloaderStatus = agentService ? agentService.getBrowserStatus() : null;
+    const mem = process.memoryUsage();
     res.json({
       status: 'ok',
       timestamp: Date.now(),
+      memoryRssMb: Math.round((mem.rss / (1024 * 1024)) * 10) / 10,
       downloader: downloaderStatus
         ? {
             available: downloaderStatus.available,
@@ -46,6 +48,28 @@ export function createApp(
             error: downloaderStatus.error
           }
         : undefined
+    });
+  });
+
+  // Diagnostics endpoint for memory, queue, and process health (Requirement 6)
+  app.get('/api/diagnostics', (req: Request, res: Response) => {
+    const diagKey = process.env.DIAGNOSTIC_KEY;
+    if (diagKey) {
+      const authHeader = req.headers.authorization;
+      const keyQuery = req.query.key;
+      const isAuthorized = authHeader === `Bearer ${diagKey}` || keyQuery === diagKey;
+      if (!isAuthorized) {
+        return res.status(401).json({ success: false, error: 'Unauthorized diagnostic request.' });
+      }
+    }
+
+    const diag = agentService ? agentService.getDiagnostics() : null;
+    res.json({
+      status: 'ok',
+      uptimeSeconds: Math.round(process.uptime()),
+      nodeVersion: process.version,
+      pid: process.pid,
+      diagnostics: diag
     });
   });
 

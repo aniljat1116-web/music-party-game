@@ -163,4 +163,98 @@ describe('Render Browser Discovery and Startup Diagnostics', () => {
       expect(roomRes.body.room.code).toBeDefined();
     });
   });
+
+  describe('Memory Optimization & Concurrency Queueing', () => {
+    it('enforces single-job concurrency and queues subsequent jobs', () => {
+      const { sessionToken, room } = roomService.createRoom('Player1', 30, 5);
+
+      // Start job 1
+      const job1 = agentService.startDownloadJob(
+        sessionToken,
+        room.code,
+        'p1',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+      );
+      expect(job1.status).toBe('started');
+
+      // Start job 2 (different video) - should be queued
+      const job2 = agentService.startDownloadJob(
+        sessionToken,
+        room.code,
+        'p1',
+        'https://www.youtube.com/watch?v=9bZkp7q19f0'
+      );
+      expect(job2.status).toBe('queued');
+      expect(job2.message).toMatch(/position 1/i);
+
+      const diag = agentService.getDiagnostics();
+      expect(diag.activeJobs).toBe(1);
+      expect(diag.queuedJobs).toBe(1);
+    });
+
+    it('rejects new jobs when the download queue is full', () => {
+      const { sessionToken, room } = roomService.createRoom('Player1', 30, 5);
+
+      // Start 1 active job
+      agentService.startDownloadJob(
+        sessionToken,
+        room.code,
+        'p1',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+      );
+
+      // Queue 5 jobs (maxQueueSize)
+      for (let i = 1; i <= 5; i++) {
+        agentService.startDownloadJob(
+          sessionToken,
+          room.code,
+          'p1',
+          `https://www.youtube.com/watch?v=abcdefghij${i}`
+        );
+      }
+
+      // 6th job should throw queue full error
+      expect(() => {
+        agentService.startDownloadJob(
+          sessionToken,
+          room.code,
+          'p1',
+          'https://www.youtube.com/watch?v=overflow123'
+        );
+      }).toThrow(/queue is currently full/i);
+    });
+
+    it('exposes process and memory metrics on /api/diagnostics', async () => {
+      const res = await request(app).get('/api/diagnostics');
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      expect(res.body.diagnostics).toBeDefined();
+      expect(res.body.diagnostics.memory.rssMb).toBeGreaterThan(0);
+      expect(res.body.diagnostics.maxConcurrent).toBe(1);
+      expect(res.body.diagnostics.maxQueueSize).toBe(5);
+    });
+  });
+
+  describe('SSE Heartbeat and Headers', () => {
+    it('sets non-buffering and keep-alive headers on SSE progress stream', async () => {
+      const { sessionToken, room } = roomService.createRoom('Player1', 30, 5);
+      const job = agentService.startDownloadJob(
+        sessionToken,
+        room.code,
+        'p1',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+      );
+
+      const response = await request(app)
+        .get(`/api/rooms/${room.code}/songs/agent-download/${job.jobId}/progress`)
+        .timeout(100)
+        .catch((err) => err.response);
+
+      if (response) {
+        expect(response.headers['content-type']).toMatch(/text\/event-stream/);
+        expect(response.headers['x-accel-buffering']).toBe('no');
+        expect(response.headers['cache-control']).toMatch(/no-cache/);
+      }
+    });
+  });
 });

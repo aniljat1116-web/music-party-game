@@ -213,3 +213,37 @@ export function getSanitizedBrowserName(browserPath: string | null): string {
   if (basename.includes('chrome')) return 'Google Chrome';
   return basename;
 }
+
+export interface MemoryStats {
+  rssMb: number;
+  heapUsedMb: number;
+  heapTotalMb: number;
+  externalMb: number;
+  systemFreeMb: number;
+  systemTotalMb: number;
+}
+
+/**
+ * Returns snapshot of Node process and OS memory usage in MB.
+ */
+export function getMemoryStats(): MemoryStats {
+  const mem = process.memoryUsage();
+  return {
+    rssMb: Math.round((mem.rss / (1024 * 1024)) * 10) / 10,
+    heapUsedMb: Math.round((mem.heapUsed / (1024 * 1024)) * 10) / 10,
+    heapTotalMb: Math.round((mem.heapTotal / (1024 * 1024)) * 10) / 10,
+    externalMb: Math.round((mem.external / (1024 * 1024)) * 10) / 10,
+    systemFreeMb: Math.round((os.freemem() / (1024 * 1024)) * 10) / 10,
+    systemTotalMb: Math.round((os.totalmem() / (1024 * 1024)) * 10) / 10
+  };
+}
+
+/**
+ * Safe logger for memory diagnostics around startup and download jobs.
+ */
+export function logMemory(context: string): void {
+  const stats = getMemoryStats();
+  console.log(
+    `📊 [Memory][${context}] RSS: ${stats.rssMb}MB | Heap: ${stats.heapUsedMb}/${stats.heapTotalMb}MB | Ext: ${stats.externalMb}MB | SysFree: ${stats.systemFreeMb}MB`
+  );
+}
