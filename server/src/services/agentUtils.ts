@@ -80,25 +80,30 @@ export function formatFileSize(bytes: number): string {
 function findChromeInPuppeteerDir(baseDir: string): string | null {
   try {
     if (!fs.existsSync(baseDir)) return null;
-    const chromeDir = path.join(baseDir, 'chrome');
-    if (!fs.existsSync(chromeDir)) return null;
-    const entries = fs.readdirSync(chromeDir);
-    for (const entry of entries) {
-      const entryPath = path.join(chromeDir, entry);
-      if (!fs.statSync(entryPath).isDirectory()) continue;
-      const candidates = [
-        path.join(entryPath, 'chrome-linux64', 'chrome'),
-        path.join(entryPath, 'chrome-linux', 'chrome'),
-        path.join(entryPath, 'chrome-win64', 'chrome.exe'),
-        path.join(entryPath, 'chrome-win32', 'chrome.exe'),
-        path.join(entryPath, 'chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
-        path.join(entryPath, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
-        path.join(entryPath, 'chrome'),
-        path.join(entryPath, 'chrome.exe')
-      ];
-      for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) {
-          return candidate;
+    const subdirs = ['chrome', 'chromium', ''];
+    for (const sub of subdirs) {
+      const searchDir = sub ? path.join(baseDir, sub) : baseDir;
+      if (!fs.existsSync(searchDir)) continue;
+      const entries = fs.readdirSync(searchDir);
+      for (const entry of entries) {
+        const entryPath = path.join(searchDir, entry);
+        if (!fs.statSync(entryPath).isDirectory()) continue;
+        const candidates = [
+          path.join(entryPath, 'chrome-linux64', 'chrome'),
+          path.join(entryPath, 'chrome-linux', 'chrome'),
+          path.join(entryPath, 'chromium-linux64', 'chrome'),
+          path.join(entryPath, 'chrome-win64', 'chrome.exe'),
+          path.join(entryPath, 'chrome-win32', 'chrome.exe'),
+          path.join(entryPath, 'chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
+          path.join(entryPath, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
+          path.join(entryPath, 'chrome'),
+          path.join(entryPath, 'chrome.exe'),
+          path.join(entryPath, 'chromium')
+        ];
+        for (const candidate of candidates) {
+          if (fs.existsSync(candidate)) {
+            return candidate;
+          }
         }
       }
     }

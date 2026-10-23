@@ -5,12 +5,11 @@ set -o errexit
 echo "📦 Installing root dependencies..."
 npm install
 
-echo "🔨 Building client application..."
-npm run build
-
-echo "🌐 Installing Chromium browser for Puppeteer..."
+echo "🌐 Configuring Puppeteer browser cache..."
 export PUPPETEER_CACHE_DIR="${PUPPETEER_CACHE_DIR:-/opt/render/project/src/.cache/puppeteer}"
 mkdir -p "$PUPPETEER_CACHE_DIR"
-npx puppeteer browsers install chrome
+
+echo "🔨 Building client and installing Chrome for Render..."
+npm run build
 
 echo "✅ Build completed successfully."
