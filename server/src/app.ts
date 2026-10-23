@@ -34,7 +34,19 @@ export function createApp(
 
   // Health check
   app.get('/api/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', timestamp: Date.now() });
+    const downloaderStatus = agentService ? agentService.getBrowserStatus() : null;
+    res.json({
+      status: 'ok',
+      timestamp: Date.now(),
+      downloader: downloaderStatus
+        ? {
+            available: downloaderStatus.available,
+            checked: downloaderStatus.checked,
+            browser: downloaderStatus.browserName,
+            error: downloaderStatus.error
+          }
+        : undefined
+    });
   });
 
   // Serve production client build if available

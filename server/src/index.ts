@@ -69,6 +69,17 @@ export function startServer() {
     console.log(`💾 SQLite database at: ${CONFIG.DB_PATH}`);
   });
 
+  // Safe startup diagnostic: Verify headless browser can launch for downloader agent
+  agentService.verifyBrowserReadiness().then((status) => {
+    if (status.available) {
+      console.log(`🚀 [TuneGuessr] Music download agent is online and ready (${status.browserName}).`);
+    } else {
+      console.warn(`⚠️ [TuneGuessr] Music download agent is unavailable: ${status.error}`);
+    }
+  }).catch((err) => {
+    console.warn(`⚠️ [TuneGuessr] Unexpected error during downloader browser check: ${err.message}`);
+  });
+
   return { httpServer, io, db, roomService, songService, gameService, agentService };
 }
 

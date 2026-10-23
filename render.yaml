@@ -3,8 +3,10 @@ services:
     name: music-party-game
     env: node
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: chmod +x ./render-build.sh && ./render-build.sh
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/project/src/.cache/puppeteer

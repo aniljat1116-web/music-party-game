@@ -6,6 +6,7 @@ node_modules/
 # Production builds
 dist/
 build/
+.cache/
 
 # Audio uploads & database
 uploads/

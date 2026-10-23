@@ -207,6 +207,14 @@ export function createAudioRouter(
         return res.status(400).json({ success: false, error: 'A valid YouTube video URL or ID is required.' });
       }
 
+      if (!downloadAgent.isBrowserAvailable()) {
+        const status = downloadAgent.getBrowserStatus();
+        return res.status(503).json({
+          success: false,
+          error: `Music download agent is temporarily unavailable on this server (${status.error || 'Browser unavailable'}). Please upload an audio file directly or use Jamendo/YouTube search.`
+        });
+      }
+
       const jobResult = downloadAgent.startDownloadJob(token, roomCode, player.id, url.trim());
 
       res.status(202).json({

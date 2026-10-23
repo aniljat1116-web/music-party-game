@@ -1,4 +1,4 @@
-import puppeteer, { Browser } from 'puppeteer-core';
+import puppeteer, { Browser } from 'puppeteer';
 import path from 'path';
 import fs from 'fs';
 import { execFile } from 'child_process';
@@ -11,11 +11,21 @@ import {
   isValidYouTubeUrl,
   sanitizeFilename,
   formatFileSize,
-  findBrowserExecutable
+  findBrowserExecutable,
+  resolveBrowserExecutable,
+  getSanitizedBrowserName
 } from './agentUtils.js';
 import { AgentDownloadPhase, AgentDownloadProgressEvent, Song } from '../types/index.js';
 
 const execFileAsync = promisify(execFile);
+const curlBin = process.platform === 'win32' ? 'curl.exe' : 'curl';
+
+export interface BrowserStatus {
+  checked: boolean;
+  available: boolean;
+  browserName: string;
+  error: string | null;
+}
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0';
@@ -44,6 +54,12 @@ export class MusicDownloadAgentService {
   private jobs = new Map<string, DownloadJob>();
   private activeRoomVideoJobs = new Map<string, string>(); // `${roomCode}:${videoId}` -> jobId
   private onJobCompletedCallback?: (roomCode: string, song: Song) => void;
+  private browserStatus: BrowserStatus = {
+    checked: false,
+    available: false,
+    browserName: 'unknown',
+    error: null
+  };
 
   constructor(songService: SongService, tempDir: string = CONFIG.AGENT_TEMP_DIR) {
     this.songService = songService;
@@ -52,6 +68,83 @@ export class MusicDownloadAgentService {
     if (!fs.existsSync(this.tempDir)) {
       fs.mkdirSync(this.tempDir, { recursive: true });
     }
+
+    // Initialize immediate synchronous check
+    const syncPath = findBrowserExecutable();
+    this.browserStatus = {
+      checked: false,
+      available: !!syncPath,
+      browserName: getSanitizedBrowserName(syncPath),
+      error: syncPath ? null : 'Browser not yet verified on this host'
+    };
+  }
+
+  /**
+   * Diagnostic startup check: Verifies browser executable exists and can launch headless.
+   * Safe: Logs concise diagnostic results and avoids crashing the application.
+   */
+  public async verifyBrowserReadiness(): Promise<BrowserStatus> {
+    try {
+      const execPath = (await resolveBrowserExecutable()) || findBrowserExecutable();
+      if (!execPath) {
+        const errorMsg = 'No compatible Chromium or Chrome browser was detected on this host.';
+        console.warn(`⚠️ [MusicDownloadAgent] Diagnostic check: ${errorMsg} Downloader feature will be unavailable.`);
+        this.browserStatus = {
+          checked: true,
+          available: false,
+          browserName: 'none',
+          error: errorMsg
+        };
+        return this.browserStatus;
+      }
+
+      const browserName = getSanitizedBrowserName(execPath);
+
+      // Safe test launch to verify browser process can spawn with sandbox flags
+      const testBrowser = await puppeteer.launch({
+        executablePath: execPath,
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-zygote'
+        ]
+      });
+      await testBrowser.close();
+
+      console.log(`🚀 [MusicDownloadAgent] Headless browser verified successfully (${browserName}).`);
+      this.browserStatus = {
+        checked: true,
+        available: true,
+        browserName,
+        error: null
+      };
+      return this.browserStatus;
+    } catch (err: any) {
+      const errMsg = err?.message || 'Failed to launch headless browser.';
+      console.warn(`⚠️ [MusicDownloadAgent] Browser launch diagnostic failed: ${errMsg}. Downloader feature will be unavailable.`);
+      this.browserStatus = {
+        checked: true,
+        available: false,
+        browserName: 'unknown',
+        error: errMsg
+      };
+      return this.browserStatus;
+    }
+  }
+
+  public getBrowserStatus(): BrowserStatus {
+    return { ...this.browserStatus };
+  }
+
+  public isBrowserAvailable(): boolean {
+    if (!this.browserStatus.checked) {
+      return !!findBrowserExecutable();
+    }
+    return this.browserStatus.available;
   }
 
   public setOnJobCompletedCallback(cb: (roomCode: string, song: Song) => void): void {
@@ -100,7 +193,7 @@ export class MusicDownloadAgentService {
           });
 
           await execFileAsync(
-            'curl.exe',
+            curlBin,
             [
               '-4',
               '-L',
@@ -153,7 +246,7 @@ export class MusicDownloadAgentService {
     // Single-stream fallback
     onProgress({ phase: 'downloading', percent: 70, message: 'Downloading audio stream directly...' });
     await execFileAsync(
-      'curl.exe',
+      curlBin,
       [
         '-4',
         '-L',
@@ -215,17 +308,18 @@ export class MusicDownloadAgentService {
     const normalizedUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
     // 1. Check browser executable
-    const browserPath = findBrowserExecutable();
+    const browserPath = (await resolveBrowserExecutable()) || findBrowserExecutable();
     if (!browserPath) {
       throw new Error(
         'No compatible Chromium or Edge browser was detected on this host. Please ensure Microsoft Edge or Google Chrome is installed.'
       );
     }
 
+    const browserName = getSanitizedBrowserName(browserPath);
     this.emitProgress(job, {
       phase: 'launching_browser',
       percent: 15,
-      message: `Launching browser automation engine (${path.basename(browserPath)})...`
+      message: `Launching browser automation engine (${browserName})...`
     });
 
     let browser: Browser | null = null;
@@ -235,10 +329,14 @@ export class MusicDownloadAgentService {
     try {
       browser = await puppeteer.launch({
         executablePath: browserPath,
-        headless: 'new',
+        headless: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-zygote',
           '--disable-blink-features=AutomationControlled',
           '--window-size=1280,800'
         ]
