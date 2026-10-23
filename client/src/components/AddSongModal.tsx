@@ -14,7 +14,8 @@ import {
   Trash2,
   Sparkles,
   ShieldAlert,
-  Download
+  Download,
+  Copy
 } from 'lucide-react';
 import { useGame } from '../context/GameContext';
 import { formatTime } from '../utils/formatTime';
@@ -62,6 +63,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
   const [ytHasSearched, setYtHasSearched] = useState(false);
   const [ytError, setYtError] = useState<string | null>(null);
   const [addingYtVideoId, setAddingYtVideoId] = useState<string | null>(null);
+  const [copiedYtVideoId, setCopiedYtVideoId] = useState<string | null>(null);
 
   // --- Tab 2: Jamendo Search State ---
   const [searchQuery, setSearchQuery] = useState('');
@@ -159,6 +161,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
       setAgentError(null);
       setIsAgentDownloading(false);
       setAgentProgress(null);
+      setCopiedYtVideoId(null);
     }
   }, [isOpen]);
 
@@ -406,6 +409,59 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
       if (mySongs.length + 1 >= maxSongs) {
         onClose();
       }
+    }
+  };
+
+  const handleCopyYouTubeLink = async (e: React.MouseEvent, videoId: string) => {
+    e.stopPropagation();
+    const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+    // Modern clipboard API
+    if (navigator?.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(ytUrl);
+        setCopiedYtVideoId(videoId);
+        addToast('YouTube link copied!', 'success');
+        setTimeout(() => {
+          setCopiedYtVideoId((prev) => (prev === videoId ? null : prev));
+        }, 2000);
+        return;
+      } catch (err) {
+        console.warn('navigator.clipboard.writeText failed, attempting fallback:', err);
+      }
+    }
+
+    // Fallback 1: document.execCommand('copy') with hidden textarea
+    try {
+      const textArea = document.createElement('textarea');
+      textArea.value = ytUrl;
+      textArea.style.position = 'fixed';
+      textArea.style.opacity = '0';
+      textArea.style.left = '-9999px';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textArea);
+
+      if (successful) {
+        setCopiedYtVideoId(videoId);
+        addToast('YouTube link copied!', 'success');
+        setTimeout(() => {
+          setCopiedYtVideoId((prev) => (prev === videoId ? null : prev));
+        }, 2000);
+        return;
+      }
+    } catch (fallbackErr) {
+      console.warn('execCommand copy fallback failed:', fallbackErr);
+    }
+
+    // Fallback 2: prompt modal if clipboard is completely restricted
+    try {
+      window.prompt('Clipboard access unavailable. Please copy this YouTube URL manually:', ytUrl);
+      addToast('YouTube link opened to copy manually.', 'info');
+    } catch {
+      addToast(`Could not copy link to clipboard: ${ytUrl}`, 'error');
     }
   };
 
@@ -914,6 +970,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
                     const isAdded = isVideoAdded(item.videoId);
                     const isAddingThis = addingYtVideoId === item.videoId;
                     const isSlotFull = mySongs.length >= maxSongs;
+                    const isCopied = copiedYtVideoId === item.videoId;
 
                     return (
                       <div
@@ -931,11 +988,12 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
                             : '1px solid var(--border-subtle)',
                           borderRadius: 'var(--radius-md)',
                           gap: '0.75rem',
+                          flexWrap: 'wrap',
                           transition: 'all 0.2s ease'
                         }}
                       >
                         {/* Video Thumbnail & Details */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', overflow: 'hidden', flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', overflow: 'hidden', flex: 1, minWidth: '220px' }}>
                           <div
                             style={{
                               width: '90px',
@@ -994,36 +1052,76 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
                           </div>
                         </div>
 
-                        {/* Add to Queue Button */}
-                        <button
-                          type="button"
-                          className={`btn btn-sm ${isAdded ? 'btn-emerald' : 'btn-primary'}`}
-                          onClick={() => handleAddYouTubeSong(item)}
-                          disabled={isAdded || isAddingThis || isSlotFull}
+                        {/* Action Buttons: Copy Link & Add to Queue */}
+                        <div
                           style={{
-                            minWidth: '120px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
                             flexShrink: 0,
-                            gap: '0.4rem',
-                            ...(isAdded ? { opacity: 0.9, cursor: 'default' } : {})
+                            flexWrap: 'wrap',
+                            justifyContent: 'flex-end'
                           }}
                         >
-                          {isAddingThis ? (
-                            <>
-                              <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} />
-                              <span>Adding...</span>
-                            </>
-                          ) : isAdded ? (
-                            <>
-                              <Check size={15} />
-                              <span>Added</span>
-                            </>
-                          ) : (
-                            <>
-                              <Plus size={15} />
-                              <span>Add to Queue</span>
-                            </>
-                          )}
-                        </button>
+                          {/* Copy Link Button */}
+                          <button
+                            type="button"
+                            className={`btn btn-sm ${isCopied ? 'btn-emerald' : 'btn-secondary'}`}
+                            onClick={(e) => handleCopyYouTubeLink(e, item.videoId)}
+                            title={`Copy YouTube link: https://www.youtube.com/watch?v=${item.videoId}`}
+                            style={{
+                              gap: '0.35rem',
+                              whiteSpace: 'nowrap',
+                              ...(isCopied
+                                ? { background: 'rgba(16, 185, 129, 0.15)', borderColor: 'var(--emerald)', color: 'var(--emerald)' }
+                                : {})
+                            }}
+                          >
+                            {isCopied ? (
+                              <>
+                                <Check size={14} />
+                                <span>Copied!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy size={14} />
+                                <span>Copy Link</span>
+                              </>
+                            )}
+                          </button>
+
+                          {/* Add to Queue Button */}
+                          <button
+                            type="button"
+                            className={`btn btn-sm ${isAdded ? 'btn-emerald' : 'btn-primary'}`}
+                            onClick={() => handleAddYouTubeSong(item)}
+                            disabled={isAdded || isAddingThis || isSlotFull}
+                            style={{
+                              minWidth: '120px',
+                              flexShrink: 0,
+                              gap: '0.4rem',
+                              whiteSpace: 'nowrap',
+                              ...(isAdded ? { opacity: 0.9, cursor: 'default' } : {})
+                            }}
+                          >
+                            {isAddingThis ? (
+                              <>
+                                <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} />
+                                <span>Adding...</span>
+                              </>
+                            ) : isAdded ? (
+                              <>
+                                <Check size={15} />
+                                <span>Added</span>
+                              </>
+                            ) : (
+                              <>
+                                <Plus size={15} />
+                                <span>Add to Queue</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
