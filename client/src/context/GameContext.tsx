@@ -11,7 +11,8 @@ import type {
   ToastItem,
   ToastType,
   JamendoTrackResult,
-  YouTubeSearchResult
+  YouTubeSearchResult,
+  AgentDownloadPhase
 } from '../types';
 import { saveSession, getSavedSession, clearSession } from '../utils/session';
 import { isAudioUnlocked, unlockAudio } from '../utils/audioUnlock';
@@ -59,6 +60,67 @@ interface GameContextType {
   addToast: (message: string, type?: ToastType, duration?: number) => void;
   removeToast: (id: string) => void;
   clearError: () => void;
+}
+
+/**
+ * Safely parses API responses to prevent `SyntaxError: Unexpected token '<'`
+ * when a reverse proxy (e.g. Render/Cloudflare) or static SPA fallback returns an HTML error page.
+ */
+async function parseApiResponse<T = any>(
+  res: Response,
+  defaultError = 'Request failed'
+): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
+  const contentType = res.headers.get('content-type') || '';
+
+  // If response is not JSON (e.g. Render HTML 502/503/504 gateway page or SPA index.html)
+  if (!contentType.includes('application/json')) {
+    const rawText = await res.text().catch(() => '');
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      return {
+        ok: false,
+        status: res.status,
+        error: `Server is waking up or temporarily unavailable (HTTP ${res.status}). Please wait a few seconds and try again.`
+      };
+    }
+    if (res.status === 404) {
+      return {
+        ok: false,
+        status: res.status,
+        error: 'Requested service endpoint was not found (HTTP 404).'
+      };
+    }
+    if (rawText.trim().startsWith('<') || rawText.includes('<!DOCTYPE')) {
+      return {
+        ok: false,
+        status: res.status,
+        error: `Server returned an HTML response instead of JSON (HTTP ${res.status}). The service may be starting up or restarting.`
+      };
+    }
+    return {
+      ok: false,
+      status: res.status,
+      error: rawText.slice(0, 120) || `${defaultError} (HTTP ${res.status})`
+    };
+  }
+
+  try {
+    const data = await res.json();
+    if (!res.ok || (data && data.success === false)) {
+      return {
+        ok: false,
+        status: res.status,
+        data,
+        error: data?.error || data?.message || `${defaultError} (HTTP ${res.status})`
+      };
+    }
+    return { ok: true, status: res.status, data };
+  } catch {
+    return {
+      ok: false,
+      status: res.status,
+      error: 'Received malformed JSON response from server. Please try again.'
+    };
+  }
 }
 
 const GameContext = createContext<GameContextType | null>(null);
@@ -278,11 +340,20 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
           clipDuration
         })
       });
-      const data = await res.json();
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to create room.');
+
+      const parsed = await parseApiResponse<{
+        success: boolean;
+        sessionToken: string;
+        room: Room;
+        player: Player;
+        error?: string;
+      }>(res, 'Failed to create room.');
+
+      if (!parsed.ok || !parsed.data?.success) {
+        throw new Error(parsed.error || 'Failed to create room.');
       }
 
+      const data = parsed.data;
       saveSession(data.sessionToken, data.room.code);
       setSessionToken(data.sessionToken);
       setCurrentPlayer(data.player);
@@ -307,11 +378,20 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roomCode, nickname })
       });
-      const data = await res.json();
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to join room.');
+
+      const parsed = await parseApiResponse<{
+        success: boolean;
+        sessionToken: string;
+        room: Room;
+        player: Player;
+        error?: string;
+      }>(res, 'Failed to join room.');
+
+      if (!parsed.ok || !parsed.data?.success) {
+        throw new Error(parsed.error || 'Failed to join room.');
       }
 
+      const data = parsed.data;
       saveSession(data.sessionToken, data.room.code);
       setSessionToken(data.sessionToken);
       setCurrentPlayer(data.player);
@@ -395,16 +475,19 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: formData
       });
 
-      const data = await res.json();
-      if (!data.success) {
-        return { success: false, error: data.error || 'Upload failed.' };
+      const parsed = await parseApiResponse<{ success: boolean; song: any; error?: string }>(
+        res,
+        'Upload failed.'
+      );
+      if (!parsed.ok || !parsed.data?.success) {
+        return { success: false, error: parsed.error || 'Upload failed.' };
       }
 
       if (socketRef.current) {
         socketRef.current.emit('room:refresh_songs');
       }
 
-      addToast(`"${data.song.title || file.name}" uploaded successfully!`, 'success');
+      addToast(`"${parsed.data.song?.title || file.name}" uploaded successfully!`, 'success');
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message || 'Network error during upload.' };
@@ -424,8 +507,18 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         offset: String(offset)
       });
       const res = await fetch(`/api/music/jamendo/search?${params.toString()}`);
-      const data = await res.json();
-      return data;
+      const parsed = await parseApiResponse<{
+        success: boolean;
+        tracks?: JamendoTrackResult[];
+        total_count?: number;
+        error?: string;
+        isConfigured?: boolean;
+      }>(res, 'Failed to search Jamendo music.');
+
+      if (!parsed.ok || !parsed.data) {
+        return { success: false, error: parsed.error || 'Failed to search Jamendo music.' };
+      }
+      return parsed.data;
     } catch (err: any) {
       return { success: false, error: err.message || 'Failed to search Jamendo music.' };
     }
@@ -456,9 +549,12 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         })
       });
 
-      const data = await res.json();
-      if (!data.success) {
-        return { success: false, error: data.error || 'Failed to add Jamendo track.' };
+      const parsed = await parseApiResponse<{ success: boolean; song?: any; error?: string }>(
+        res,
+        'Failed to add Jamendo track.'
+      );
+      if (!parsed.ok || !parsed.data?.success) {
+        return { success: false, error: parsed.error || 'Failed to add Jamendo track.' };
       }
 
       if (socketRef.current) {
@@ -485,15 +581,19 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({ query })
       });
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        const errorMsg = data.error || 'Failed to search YouTube.';
-        return { success: false, error: errorMsg };
+      const parsed = await parseApiResponse<{
+        success: boolean;
+        results?: YouTubeSearchResult[];
+        error?: string;
+      }>(res, 'Failed to search YouTube.');
+
+      if (!parsed.ok || !parsed.data?.success) {
+        return { success: false, error: parsed.error || 'Failed to search YouTube.' };
       }
 
       return {
         success: true,
-        results: data.results || []
+        results: parsed.data.results || []
       };
     } catch (err: any) {
       return {
@@ -529,9 +629,13 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         })
       });
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        const errMsg = data.error || 'Failed to add YouTube video.';
+      const parsed = await parseApiResponse<{ success: boolean; song?: any; error?: string }>(
+        res,
+        'Failed to add YouTube video.'
+      );
+
+      if (!parsed.ok || !parsed.data?.success) {
+        const errMsg = parsed.error || 'Failed to add YouTube video.';
         addToast(errMsg, 'error');
         return { success: false, error: errMsg };
       }
@@ -568,13 +672,19 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({ url })
       });
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        const errorMsg = data.error || 'Failed to start download job.';
+      const parsed = await parseApiResponse<{
+        success: boolean;
+        jobId: string;
+        error?: string;
+        message?: string;
+      }>(res, 'Failed to start download job.');
+
+      if (!parsed.ok || !parsed.data?.success || !parsed.data?.jobId) {
+        const errorMsg = parsed.error || 'Failed to start download job.';
         return { success: false, error: errorMsg };
       }
 
-      const jobId = data.jobId;
+      const jobId = parsed.data.jobId;
 
       return new Promise((resolve) => {
         let isDone = false;
@@ -625,11 +735,23 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
               return;
             }
 
-            if (!statusRes.ok) {
-              throw new Error(`HTTP ${statusRes.status}`);
+            const parsedStatus = await parseApiResponse<{
+              success: boolean;
+              status: AgentDownloadPhase;
+              jobId: string;
+              roomCode: string;
+              percent: number;
+              message: string;
+              data?: any;
+              result?: any;
+              error?: string;
+            }>(statusRes, 'Failed to poll download status.');
+
+            if (!parsedStatus.ok || !parsedStatus.data) {
+              throw new Error(parsedStatus.error || `HTTP ${statusRes.status}`);
             }
 
-            const statusData = await statusRes.json();
+            const statusData = parsedStatus.data;
             consecutivePollErrors = 0;
 
             if (statusData.status === 'completed') {
@@ -746,8 +868,11 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
           Authorization: `Bearer ${sessionToken}`
         }
       });
-      const data = await res.json();
-      if (data.success && socketRef.current) {
+      const parsed = await parseApiResponse<{ success: boolean; error?: string }>(
+        res,
+        'Failed to remove song.'
+      );
+      if (parsed.ok && parsed.data?.success && socketRef.current) {
         socketRef.current.emit('room:refresh_songs');
         addToast('Song removed from room.', 'info');
         return true;
