@@ -44,7 +44,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
     addToast
   } = useGame();
 
-  const [activeTab, setActiveTab] = useState<'agent' | 'youtube' | 'jamendo' | 'upload'>('agent');
+  const [activeTab, setActiveTab] = useState<'youtube' | 'upload' | 'jamendo' | 'agent'>('youtube');
 
   // --- Tab 0: Agent Download State ---
   const [agentUrl, setAgentUrl] = useState('');
@@ -541,7 +541,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
                 Add Track to Room
               </h3>
               <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                {mySongs.length}/{maxSongs} song slots filled • Legal catalog search & local uploads
+                {mySongs.length}/{maxSongs} song slots filled • Instant YouTube search, local uploads & catalog
               </span>
             </div>
           </div>
@@ -570,7 +570,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
           <button
             type="button"
             onClick={() => {
-              setActiveTab('agent');
+              setActiveTab('youtube');
               if (previewAudioRef.current) previewAudioRef.current.pause();
               setPreviewTrackId(null);
             }}
@@ -578,10 +578,10 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
               flex: 1,
               minWidth: '150px',
               padding: '0.85rem 1rem',
-              background: activeTab === 'agent' ? 'rgba(239, 68, 68, 0.12)' : 'transparent',
+              background: activeTab === 'youtube' ? 'rgba(239, 68, 68, 0.12)' : 'transparent',
               border: 'none',
-              borderBottom: activeTab === 'agent' ? '2px solid #ef4444' : '2px solid transparent',
-              color: activeTab === 'agent' ? '#f87171' : 'var(--text-secondary)',
+              borderBottom: activeTab === 'youtube' ? '2px solid #ef4444' : '2px solid transparent',
+              color: activeTab === 'youtube' ? '#f87171' : 'var(--text-secondary)',
               fontWeight: 700,
               fontSize: '0.9rem',
               display: 'flex',
@@ -592,13 +592,25 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
               transition: 'all 0.2s ease'
             }}
           >
-            <Download size={16} /> Download Audio
+            <Search size={16} /> YouTube Search
+            <span
+              style={{
+                fontSize: '0.7rem',
+                background: 'rgba(239, 68, 68, 0.2)',
+                color: '#fca5a5',
+                padding: '1px 6px',
+                borderRadius: 'var(--radius-full)',
+                fontWeight: 700
+              }}
+            >
+              1-Click
+            </span>
           </button>
 
           <button
             type="button"
             onClick={() => {
-              setActiveTab('youtube');
+              setActiveTab('upload');
               if (previewAudioRef.current) previewAudioRef.current.pause();
               setPreviewTrackId(null);
             }}
@@ -606,10 +618,10 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
               flex: 1,
               minWidth: '140px',
               padding: '0.85rem 1rem',
-              background: activeTab === 'youtube' ? 'rgba(239, 68, 68, 0.08)' : 'transparent',
+              background: activeTab === 'upload' ? 'rgba(139, 92, 246, 0.12)' : 'transparent',
               border: 'none',
-              borderBottom: activeTab === 'youtube' ? '2px solid #dc2626' : '2px solid transparent',
-              color: activeTab === 'youtube' ? '#fca5a5' : 'var(--text-secondary)',
+              borderBottom: activeTab === 'upload' ? '2px solid var(--primary)' : '2px solid transparent',
+              color: activeTab === 'upload' ? 'var(--primary)' : 'var(--text-secondary)',
               fontWeight: 700,
               fontSize: '0.9rem',
               display: 'flex',
@@ -620,7 +632,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
               transition: 'all 0.2s ease'
             }}
           >
-            <Search size={16} /> YouTube Stream
+            <Upload size={16} /> Upload Audio
           </button>
 
           <button
@@ -654,7 +666,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
           <button
             type="button"
             onClick={() => {
-              setActiveTab('upload');
+              setActiveTab('agent');
               if (previewAudioRef.current) previewAudioRef.current.pause();
               setPreviewTrackId(null);
             }}
@@ -662,10 +674,10 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
               flex: 1,
               minWidth: '140px',
               padding: '0.85rem 1rem',
-              background: activeTab === 'upload' ? 'rgba(139, 92, 246, 0.12)' : 'transparent',
+              background: activeTab === 'agent' ? 'rgba(239, 68, 68, 0.08)' : 'transparent',
               border: 'none',
-              borderBottom: activeTab === 'upload' ? '2px solid var(--primary)' : '2px solid transparent',
-              color: activeTab === 'upload' ? 'var(--primary)' : 'var(--text-secondary)',
+              borderBottom: activeTab === 'agent' ? '2px solid #dc2626' : '2px solid transparent',
+              color: activeTab === 'agent' ? '#fca5a5' : 'var(--text-secondary)',
               fontWeight: 700,
               fontSize: '0.9rem',
               display: 'flex',
@@ -676,7 +688,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
               transition: 'all 0.2s ease'
             }}
           >
-            <Upload size={16} /> Upload Audio
+            <Download size={16} /> Download Audio
           </button>
         </div>
 
@@ -866,6 +878,57 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
           {/* TAB 1: YOUTUBE MUSIC SEARCH */}
           {activeTab === 'youtube' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              {/* Instant Search Banner */}
+              <div
+                style={{
+                  background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(220, 38, 38, 0.05))',
+                  border: '1px solid rgba(239, 68, 68, 0.28)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '0.9rem 1.15rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '0.75rem',
+                  flexWrap: 'wrap'
+                }}
+              >
+                <div>
+                  <h4
+                    style={{
+                      margin: 0,
+                      fontSize: '0.95rem',
+                      fontWeight: 700,
+                      color: '#f87171',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.45rem',
+                      marginBottom: '0.2rem'
+                    }}
+                  >
+                    <Sparkles size={16} /> Instant 1-Click Search & Play
+                  </h4>
+                  <p style={{ margin: 0, fontSize: '0.825rem', color: 'var(--text-secondary)' }}>
+                    Type any song title, artist, or paste a YouTube URL. Add instantly to the room with zero download wait time!
+                  </p>
+                </div>
+                <span
+                  style={{
+                    background: 'rgba(16, 185, 129, 0.15)',
+                    color: 'var(--emerald)',
+                    border: '1px solid rgba(16, 185, 129, 0.3)',
+                    fontWeight: 700,
+                    fontSize: '0.75rem',
+                    padding: '0.25rem 0.6rem',
+                    borderRadius: 'var(--radius-full)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.3rem'
+                  }}
+                >
+                  ⚡ Zero Wait Time
+                </span>
+              </div>
+
               {/* Search Bar Form */}
               <form
                 onSubmit={handleYtSearch}
@@ -885,7 +948,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
                   <input
                     type="text"
                     className="form-input"
-                    placeholder="Search YouTube by song title, artist, or keywords..."
+                    placeholder="Search by song title, artist, or paste a YouTube URL..."
                     value={ytQuery}
                     onChange={(e) => setYtQuery(e.target.value)}
                     style={{

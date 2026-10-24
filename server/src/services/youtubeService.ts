@@ -1,4 +1,5 @@
 import ytSearch from 'yt-search';
+import { extractYouTubeId } from './agentUtils.js';
 
 export interface YouTubeSearchResult {
   videoId: string;
@@ -10,7 +11,8 @@ export interface YouTubeSearchResult {
 export class YouTubeService {
   /**
    * Search YouTube for videos matching the query.
-   * Returns up to 5 results with videoId, title, thumbnail, and duration.
+   * If a YouTube URL or 11-char video ID is passed, returns that direct video.
+   * Otherwise returns up to 5 keyword search results with videoId, title, thumbnail, and duration.
    */
   async search(query: string, maxResults = 5): Promise<YouTubeSearchResult[]> {
     const trimmed = (query || '').trim();
@@ -24,8 +26,44 @@ export class YouTubeService {
     }
 
     try {
-      // yt-search returns an object containing .videos array
       const searchFn: any = typeof ytSearch === 'function' ? ytSearch : (ytSearch as any).default;
+      const extractedId = extractYouTubeId(trimmed);
+
+      // If user pasted a YouTube URL or direct video ID, look up the exact video first
+      if (extractedId) {
+        try {
+          const directVideo = await searchFn({ videoId: extractedId });
+          if (directVideo && (directVideo.title || directVideo.videoId)) {
+            let durationStr = '0:00';
+            if (directVideo.timestamp) {
+              durationStr = String(directVideo.timestamp);
+            } else if (directVideo.duration && directVideo.duration.timestamp) {
+              durationStr = String(directVideo.duration.timestamp);
+            } else if (typeof directVideo.seconds === 'number' && directVideo.seconds > 0) {
+              const mins = Math.floor(directVideo.seconds / 60);
+              const secs = directVideo.seconds % 60;
+              durationStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+            }
+
+            return [
+              {
+                videoId: extractedId,
+                title: String(directVideo.title || `YouTube Track ${extractedId}`).trim(),
+                thumbnail: String(
+                  directVideo.thumbnail ||
+                    directVideo.image ||
+                    `https://i.ytimg.com/vi/${extractedId}/hqdefault.jpg`
+                ),
+                duration: durationStr
+              }
+            ];
+          }
+        } catch {
+          // If direct ID lookup fails, continue to standard keyword search
+        }
+      }
+
+      // yt-search returns an object containing .videos array
       const searchResult = await searchFn(trimmed);
 
       if (!searchResult || !Array.isArray(searchResult.videos)) {

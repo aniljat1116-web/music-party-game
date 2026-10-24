@@ -28,6 +28,16 @@ class MockYouTubeService extends YouTubeService {
     if (trimmed === 'SIMULATE_SEARCH_ERROR') {
       throw new Error('Failed to retrieve search results from YouTube. Please try another query.');
     }
+    if (trimmed.includes('youtube.com/watch?v=dQw4w9WgXcQ') || trimmed.includes('youtu.be/dQw4w9WgXcQ')) {
+      return [
+        {
+          videoId: 'dQw4w9WgXcQ',
+          title: 'Direct Link Video - Rick Astley',
+          thumbnail: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+          duration: '3:33'
+        }
+      ];
+    }
 
     // Return mock results matching query
     const mockList: YouTubeSearchResult[] = [
@@ -155,6 +165,18 @@ describe('YouTube Search & Song Queueing Integration', () => {
 
       expect(res.body.success).toBe(false);
       expect(res.body.error).toContain('too long');
+    });
+
+    it('returns direct video result when given a full YouTube URL', async () => {
+      const res = await request(app)
+        .post('/api/search')
+        .send({ query: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.results.length).toBe(1);
+      expect(res.body.results[0].videoId).toBe('dQw4w9WgXcQ');
+      expect(res.body.results[0].title).toBe('Direct Link Video - Rick Astley');
     });
 
     it('handles empty results gracefully without errors', async () => {
@@ -316,6 +338,15 @@ describe('YouTube Search & Song Queueing Integration', () => {
       expect(state.current_song).toBeDefined();
       expect(state.current_song?.source_type).toBe('youtube');
       expect(['ytVideo123', 'ytVideo456', 'ytVideo789']).toContain(state.current_song?.external_id);
+    });
+  });
+
+  describe('3. YouTubeService Unit Tests', () => {
+    it('validates query constraints and handles empty or excessively long input', async () => {
+      const realService = new YouTubeService();
+      await expect(realService.search('')).rejects.toThrow('cannot be empty');
+      await expect(realService.search('   ')).rejects.toThrow('cannot be empty');
+      await expect(realService.search('a'.repeat(201))).rejects.toThrow('too long');
     });
   });
 });
