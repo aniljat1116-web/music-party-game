@@ -147,13 +147,13 @@ describe('YT-Ai Audio Converter Integration Tests', () => {
   it('handles stream failure from YT-Ai service with informative error message and cleans temp files', async () => {
     const { room, sessionToken } = roomService.createRoom('Host', 30, 5);
 
-    // Mock globalThis.fetch to return a 502 Bad Gateway on stream
+    // Mock globalThis.fetch to return a 502 Bad Gateway
     globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
       const urlStr = String(url);
       if (urlStr.includes('/info')) {
         return new Response(JSON.stringify({ title: 'Failing Video', duration: 120 }), { status: 200 });
       }
-      if (urlStr.includes('/stream')) {
+      if (urlStr.includes('/x/a') || urlStr.includes('/stream')) {
         return new Response('YT-Ai internal transcoding error', { status: 502 });
       }
       return new Response('Not Found', { status: 404 });

@@ -279,97 +279,142 @@ export class MusicDownloadAgentService {
       const streamController = new AbortController();
       let streamTimeout: NodeJS.Timeout | null = null;
       let streamRes: any = null;
+      let remoteError: string | null = null;
+      const isToolsService = serviceUrl.includes('tools.ruvs.in');
 
-      // Protocol 1: Try tools.ruvs.in job queue (/x/a -> /x/b -> /x/c)
+      // Protocol 1: tools.ruvs.in job queue (/x/a -> /x/b -> /x/c)
       try {
-        const submitRes = await fetch(`${serviceUrl}/x/a`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          },
-          body: JSON.stringify({
-            url: `https://youtu.be/${videoId}`,
-            format: 'mp3',
-            quality: '192'
-          }),
-          signal: AbortSignal.timeout(10000)
-        }).catch(() => null);
+        const maxAttempts = 3;
+        let submitData: any = null;
 
-        if (submitRes && submitRes.ok) {
-          const submitData = (await submitRes.json().catch(() => null)) as any;
-          if (submitData && submitData.job_id) {
-            const remoteJobId = submitData.job_id;
-            let isReady = false;
-            let downloadUrl = `${serviceUrl}/x/c?job_id=${encodeURIComponent(remoteJobId)}`;
-            const maxPolls = 40;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          this.emitProgress(job, {
+            phase: 'processing',
+            percent: 40 + attempt * 2,
+            message:
+              attempt === 1
+                ? 'Submitting audio conversion job to YT-Ai service...'
+                : `Remote conversion queue busy, retrying (${attempt}/${maxAttempts})...`
+          });
 
-            for (let poll = 0; poll < maxPolls; poll++) {
-              await new Promise((r) => setTimeout(r, 1200));
-              const statusRes = await fetch(`${serviceUrl}/x/b?job_id=${encodeURIComponent(remoteJobId)}`, {
-                headers: {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                  'Referer': 'https://melamrahul.github.io/yt-ai/'
-                },
-                signal: AbortSignal.timeout(8000)
-              }).catch(() => null);
+          const submitRes = await fetch(`${serviceUrl}/x/a`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              'Origin': 'https://melamrahul.github.io',
+              'Referer': 'https://melamrahul.github.io/yt-ai/'
+            },
+            body: JSON.stringify({
+              url: `https://youtu.be/${videoId}`,
+              format: 'mp3',
+              quality: '192'
+            }),
+            signal: AbortSignal.timeout(12000)
+          }).catch((err) => {
+            console.warn(`[MusicDownloadAgent] Submit network note (attempt ${attempt}): ${err.message}`);
+            return null;
+          });
 
-              if (statusRes && statusRes.ok) {
-                const statusData = (await statusRes.json().catch(() => null)) as any;
-                if (statusData && statusData.status === 'completed') {
-                  isReady = true;
-                  // Always use the /x/c endpoint matching the frontend implementation
-                  downloadUrl = `${serviceUrl}/x/c?job_id=${encodeURIComponent(remoteJobId)}`;
-                  if (statusData.filename && typeof statusData.filename === 'string') {
-                    const rawName = statusData.filename.replace(/\.[^/.]+$/, '').trim();
-                    if (rawName.includes(' - ')) {
-                      const parts = rawName.split(' - ');
-                      artist = parts[0].trim();
-                      title = parts.slice(1).join(' - ').replace(/\(Official.*?\)/gi, '').trim();
-                    } else {
-                      title = rawName.replace(/\(Official.*?\)/gi, '').trim();
-                    }
-                  }
-                  break;
-                } else if (statusData && statusData.status === 'error') {
-                  throw new Error(statusData.message || 'Remote conversion failed.');
-                }
+          if (submitRes) {
+            if (submitRes.status === 503) {
+              if (attempt < maxAttempts) {
+                await new Promise((r) => setTimeout(r, 2000));
+                continue;
               }
-
-              const pollPct = Math.min(65, Math.round(40 + (poll / maxPolls) * 25));
-              this.emitProgress(job, {
-                phase: 'processing',
-                percent: pollPct,
-                message: `Converting audio on YT-Ai service (${poll + 1}s)...`
-              });
+              remoteError =
+                'Remote audio conversion queue is currently full. Please try again in a few moments, or use the YouTube Stream tab for instant playback.';
+              break;
             }
 
-            if (!isReady) {
-              throw new Error('YT-Ai conversion timed out waiting for server completion.');
+            if (submitRes.ok) {
+              submitData = (await submitRes.json().catch(() => null)) as any;
+              if (submitData && submitData.job_id) {
+                break;
+              }
+            } else {
+              const errBody = await submitRes.text().catch(() => '');
+              remoteError = `Remote conversion service returned HTTP ${submitRes.status}: ${errBody.slice(0, 100)}`;
+              break;
             }
-
-            this.emitProgress(job, {
-              phase: 'downloading',
-              percent: 70,
-              message: 'Streaming converted MP3 audio data...'
-            });
-
-            streamTimeout = setTimeout(() => streamController.abort(), CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS);
-            streamRes = await fetch(downloadUrl, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://melamrahul.github.io/yt-ai/'
-              },
-              signal: streamController.signal
-            });
+          } else if (attempt < maxAttempts) {
+            await new Promise((r) => setTimeout(r, 2000));
           }
         }
+
+        if (submitData && submitData.job_id) {
+          const remoteJobId = submitData.job_id;
+          let isReady = false;
+          const downloadUrl = `${serviceUrl}/x/c?job_id=${encodeURIComponent(remoteJobId)}`;
+          const maxPolls = 40;
+
+          for (let poll = 0; poll < maxPolls; poll++) {
+            await new Promise((r) => setTimeout(r, 1200));
+            const statusRes = await fetch(`${serviceUrl}/x/b?job_id=${encodeURIComponent(remoteJobId)}`, {
+              headers: {
+                'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Referer': 'https://melamrahul.github.io/yt-ai/'
+              },
+              signal: AbortSignal.timeout(8000)
+            }).catch(() => null);
+
+            if (statusRes && statusRes.ok) {
+              const statusData = (await statusRes.json().catch(() => null)) as any;
+              if (statusData && statusData.status === 'completed') {
+                isReady = true;
+                if (statusData.filename && typeof statusData.filename === 'string') {
+                  const rawName = statusData.filename.replace(/\.[^/.]+$/, '').trim();
+                  if (rawName.includes(' - ')) {
+                    const parts = rawName.split(' - ');
+                    artist = parts[0].trim();
+                    title = parts.slice(1).join(' - ').replace(/\(Official.*?\)/gi, '').trim();
+                  } else {
+                    title = rawName.replace(/\(Official.*?\)/gi, '').trim();
+                  }
+                }
+                break;
+              } else if (statusData && statusData.status === 'error') {
+                throw new Error(statusData.message || 'Remote audio conversion failed.');
+              }
+            }
+
+            const pollPct = Math.min(68, Math.round(45 + (poll / maxPolls) * 23));
+            this.emitProgress(job, {
+              phase: 'processing',
+              percent: pollPct,
+              message: `Converting audio on YT-Ai service (${poll + 1}s)...`
+            });
+          }
+
+          if (!isReady) {
+            throw new Error('YT-Ai audio conversion timed out waiting for server completion.');
+          }
+
+          this.emitProgress(job, {
+            phase: 'downloading',
+            percent: 70,
+            message: 'Streaming converted MP3 audio data...'
+          });
+
+          streamTimeout = setTimeout(() => streamController.abort(), CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS);
+          streamRes = await fetch(downloadUrl, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              'Referer': 'https://melamrahul.github.io/yt-ai/'
+            },
+            signal: streamController.signal
+          });
+        }
       } catch (protocol1Err: any) {
-        console.warn(`[MusicDownloadAgent] YT-Ai Protocol 1 note: ${protocol1Err.message}`);
+        console.warn(`[MusicDownloadAgent] YT-Ai Protocol 1 error: ${protocol1Err.message}`);
+        remoteError = protocol1Err.message;
       }
 
-      // Protocol 2 Fallback: Direct /stream endpoint
-      if (!streamRes || !streamRes.ok) {
+      // Protocol 2: ONLY for non-tools custom/local services (e.g. localhost:5000) that expose /stream
+      if ((!streamRes || !streamRes.ok) && !isToolsService) {
         this.emitProgress(job, {
           phase: 'downloading',
           percent: 50,
@@ -403,6 +448,13 @@ export class MusicDownloadAgentService {
         }
       }
 
+      if (!streamRes || !streamRes.ok) {
+        if (streamTimeout) clearTimeout(streamTimeout);
+        throw new Error(
+          remoteError ||
+            'Audio conversion service is currently busy or unavailable. Please try again in a few moments, or use the YouTube Stream tab for instant playback.'
+        );
+      }
       if (!streamRes.body) {
         if (streamTimeout) clearTimeout(streamTimeout);
         throw new Error('Audio streaming service returned an empty response body.');
