@@ -307,7 +307,10 @@ export class MusicDownloadAgentService {
             for (let poll = 0; poll < maxPolls; poll++) {
               await new Promise((r) => setTimeout(r, 1200));
               const statusRes = await fetch(`${serviceUrl}/x/b?job_id=${encodeURIComponent(remoteJobId)}`, {
-                headers: { 'User-Agent': 'Mozilla/5.0' },
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Referer': 'https://melamrahul.github.io/yt-ai/'
+                },
                 signal: AbortSignal.timeout(8000)
               }).catch(() => null);
 
@@ -315,9 +318,8 @@ export class MusicDownloadAgentService {
                 const statusData = (await statusRes.json().catch(() => null)) as any;
                 if (statusData && statusData.status === 'completed') {
                   isReady = true;
-                  if (statusData.download_url) {
-                    downloadUrl = statusData.download_url;
-                  }
+                  // Always use the /x/c endpoint matching the frontend implementation
+                  downloadUrl = `${serviceUrl}/x/c?job_id=${encodeURIComponent(remoteJobId)}`;
                   if (statusData.filename && typeof statusData.filename === 'string') {
                     const rawName = statusData.filename.replace(/\.[^/.]+$/, '').trim();
                     if (rawName.includes(' - ')) {
@@ -354,7 +356,10 @@ export class MusicDownloadAgentService {
 
             streamTimeout = setTimeout(() => streamController.abort(), CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS);
             streamRes = await fetch(downloadUrl, {
-              headers: { 'User-Agent': 'Mozilla/5.0' },
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://melamrahul.github.io/yt-ai/'
+              },
               signal: streamController.signal
             });
           }
