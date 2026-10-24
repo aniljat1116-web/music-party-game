@@ -64,23 +64,39 @@ describe('YT-Ai Audio Converter Integration Tests', () => {
     const { room, sessionToken } = roomService.createRoom('Host', 30, 5);
     const mockAudioBytes = Buffer.from('mock-mp3-audio-data-from-ytai');
 
-    // Mock globalThis.fetch to simulate YT-Ai /info and /stream endpoints
+    // Mock globalThis.fetch to simulate YT-Ai endpoints
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn().mockImplementation(async (url: string, init?: any) => {
       const urlStr = String(url);
-      if (urlStr.includes('/info')) {
-        return new Response(JSON.stringify({ title: 'Bohemian Rhapsody', duration: 354 }), {
+      if (urlStr.includes('/x/a')) {
+        return new Response(JSON.stringify({ job_id: 'mock_job_123', status: 'processing' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
-      if (urlStr.includes('/stream')) {
+      if (urlStr.includes('/x/b')) {
+        return new Response(
+          JSON.stringify({
+            status: 'completed',
+            filename: 'Queen - Bohemian Rhapsody.mp3',
+            download_url: 'https://tools.ruvs.in/x/c?job_id=mock_job_123'
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (urlStr.includes('/x/c') || urlStr.includes('/stream')) {
         return new Response(mockAudioBytes, {
           status: 200,
           headers: {
             'Content-Type': 'audio/mpeg',
             'Content-Length': String(mockAudioBytes.length)
           }
+        });
+      }
+      if (urlStr.includes('/info')) {
+        return new Response(JSON.stringify({ title: 'Bohemian Rhapsody', duration: 354 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
         });
       }
       return originalFetch(url, init);

@@ -9,6 +9,6 @@ services:
       - key: NODE_ENV
         value: production
       - key: YT_AI_SERVICE_URL
-        value: https://ruvs.in
+        value: https://tools.ruvs.in
       - key: NODE_OPTIONS
         value: --max-old-space-size=256

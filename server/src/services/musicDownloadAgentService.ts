@@ -268,41 +268,138 @@ export class MusicDownloadAgentService {
         } catch {}
       }
 
-      // 3. Request MP3 conversion stream via GET /stream
+      // 3. Request MP3 conversion stream (supports both tools.ruvs.in /x/a job queue and direct /stream)
       this.emitProgress(job, {
-        phase: 'downloading',
-        percent: 45,
-        message: 'Connecting to YT-Ai audio stream (192kbps MP3)...',
+        phase: 'processing',
+        percent: 40,
+        message: 'Connecting to YT-Ai audio conversion engine (192kbps MP3)...',
         data: { title, artist, durationSeconds, thumbnail }
       });
 
-      const streamUrl = `${serviceUrl}/stream?url=${encodeURIComponent(normalizedUrl)}&format=mp3&quality=192`;
       const streamController = new AbortController();
-      const streamTimeout = setTimeout(() => streamController.abort(), CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS);
+      let streamTimeout: NodeJS.Timeout | null = null;
+      let streamRes: any = null;
 
-      let streamRes: any;
+      // Protocol 1: Try tools.ruvs.in job queue (/x/a -> /x/b -> /x/c)
       try {
-        streamRes = await fetch(streamUrl, {
+        const submitRes = await fetch(`${serviceUrl}/x/a`, {
+          method: 'POST',
           headers: {
-            'User-Agent': 'TuneGuessr/2.0'
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
           },
-          signal: streamController.signal
-        });
-      } catch (streamErr: any) {
-        clearTimeout(streamTimeout);
-        throw new Error(`Failed to connect to audio streaming service at ${serviceUrl}: ${streamErr.message}`);
+          body: JSON.stringify({
+            url: `https://youtu.be/${videoId}`,
+            format: 'mp3',
+            quality: '192'
+          }),
+          signal: AbortSignal.timeout(10000)
+        }).catch(() => null);
+
+        if (submitRes && submitRes.ok) {
+          const submitData = (await submitRes.json().catch(() => null)) as any;
+          if (submitData && submitData.job_id) {
+            const remoteJobId = submitData.job_id;
+            let isReady = false;
+            let downloadUrl = `${serviceUrl}/x/c?job_id=${encodeURIComponent(remoteJobId)}`;
+            const maxPolls = 40;
+
+            for (let poll = 0; poll < maxPolls; poll++) {
+              await new Promise((r) => setTimeout(r, 1200));
+              const statusRes = await fetch(`${serviceUrl}/x/b?job_id=${encodeURIComponent(remoteJobId)}`, {
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+                signal: AbortSignal.timeout(8000)
+              }).catch(() => null);
+
+              if (statusRes && statusRes.ok) {
+                const statusData = (await statusRes.json().catch(() => null)) as any;
+                if (statusData && statusData.status === 'completed') {
+                  isReady = true;
+                  if (statusData.download_url) {
+                    downloadUrl = statusData.download_url;
+                  }
+                  if (statusData.filename && typeof statusData.filename === 'string') {
+                    const rawName = statusData.filename.replace(/\.[^/.]+$/, '').trim();
+                    if (rawName.includes(' - ')) {
+                      const parts = rawName.split(' - ');
+                      artist = parts[0].trim();
+                      title = parts.slice(1).join(' - ').replace(/\(Official.*?\)/gi, '').trim();
+                    } else {
+                      title = rawName.replace(/\(Official.*?\)/gi, '').trim();
+                    }
+                  }
+                  break;
+                } else if (statusData && statusData.status === 'error') {
+                  throw new Error(statusData.message || 'Remote conversion failed.');
+                }
+              }
+
+              const pollPct = Math.min(65, Math.round(40 + (poll / maxPolls) * 25));
+              this.emitProgress(job, {
+                phase: 'processing',
+                percent: pollPct,
+                message: `Converting audio on YT-Ai service (${poll + 1}s)...`
+              });
+            }
+
+            if (!isReady) {
+              throw new Error('YT-Ai conversion timed out waiting for server completion.');
+            }
+
+            this.emitProgress(job, {
+              phase: 'downloading',
+              percent: 70,
+              message: 'Streaming converted MP3 audio data...'
+            });
+
+            streamTimeout = setTimeout(() => streamController.abort(), CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS);
+            streamRes = await fetch(downloadUrl, {
+              headers: { 'User-Agent': 'Mozilla/5.0' },
+              signal: streamController.signal
+            });
+          }
+        }
+      } catch (protocol1Err: any) {
+        console.warn(`[MusicDownloadAgent] YT-Ai Protocol 1 note: ${protocol1Err.message}`);
       }
 
-      if (!streamRes.ok) {
-        clearTimeout(streamTimeout);
-        const errText = await streamRes.text().catch(() => '');
-        throw new Error(
-          `Audio streaming service returned HTTP ${streamRes.status}: ${errText.slice(0, 120) || 'Stream unavailable'}`
-        );
+      // Protocol 2 Fallback: Direct /stream endpoint
+      if (!streamRes || !streamRes.ok) {
+        this.emitProgress(job, {
+          phase: 'downloading',
+          percent: 50,
+          message: 'Connecting to direct YT-Ai audio stream (192kbps MP3)...',
+          data: { title, artist, durationSeconds, thumbnail }
+        });
+
+        const streamUrl = `${serviceUrl}/stream?url=${encodeURIComponent(normalizedUrl)}&format=mp3&quality=192`;
+        if (!streamTimeout) {
+          streamTimeout = setTimeout(() => streamController.abort(), CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS);
+        }
+
+        try {
+          streamRes = await fetch(streamUrl, {
+            headers: {
+              'User-Agent': 'TuneGuessr/2.0'
+            },
+            signal: streamController.signal
+          });
+        } catch (streamErr: any) {
+          if (streamTimeout) clearTimeout(streamTimeout);
+          throw new Error(`Failed to connect to audio streaming service at ${serviceUrl}: ${streamErr.message}`);
+        }
+
+        if (!streamRes.ok) {
+          if (streamTimeout) clearTimeout(streamTimeout);
+          const errText = await streamRes.text().catch(() => '');
+          throw new Error(
+            `Audio streaming service returned HTTP ${streamRes.status}: ${errText.slice(0, 120) || 'Stream unavailable'}`
+          );
+        }
       }
 
       if (!streamRes.body) {
-        clearTimeout(streamTimeout);
+        if (streamTimeout) clearTimeout(streamTimeout);
         throw new Error('Audio streaming service returned an empty response body.');
       }
 
