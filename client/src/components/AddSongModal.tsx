@@ -705,10 +705,10 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
                     marginBottom: '0.35rem'
                   }}
                 >
-                  <Sparkles size={16} /> Automated YouTube Music Downloader
+                  <Sparkles size={16} /> YT-Ai YouTube Audio Converter
                 </h4>
                 <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  Paste a YouTube video URL or ID. The agent will automatically convert and extract audio directly into your room playlist as a verified, high-fidelity local track.
+                  Paste a YouTube video URL or ID. The YT-Ai engine will automatically convert and extract high-fidelity MP3 audio directly into your room playlist.
                 </p>
               </div>
 

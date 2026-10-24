@@ -9,7 +9,7 @@
     "dev:server": "tsx watch server/src/index.ts",
     "dev:client": "cd client && npm run dev",
     "build:client": "cd client && npm install && npm run build",
-    "build": "npm run build:client && npx puppeteer browsers install chrome",
+    "build": "npm run build:client",
     "build:render": "npm run build",
     "test": "vitest run"
   },

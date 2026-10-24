@@ -35,5 +35,6 @@ export const CONFIG = {
   JAMENDO_CLIENT_ID: process.env.JAMENDO_CLIENT_ID || '',
   JAMENDO_API_BASE: 'https://api.jamendo.com/v3.0',
   AGENT_DOWNLOAD_TIMEOUT_MS: parseInt(process.env.AGENT_DOWNLOAD_TIMEOUT_MS || '90000', 10),
-  AGENT_TEMP_DIR: process.env.AGENT_TEMP_DIR || path.resolve(process.cwd(), 'uploads', '.agent_temp')
+  AGENT_TEMP_DIR: process.env.AGENT_TEMP_DIR || path.resolve(process.cwd(), 'uploads', '.agent_temp'),
+  YT_AI_SERVICE_URL: (process.env.YT_AI_SERVICE_URL || 'https://ruvs.in').replace(/\/+$/, '')
 };

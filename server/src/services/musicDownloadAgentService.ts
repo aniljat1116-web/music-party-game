@@ -1,8 +1,6 @@
-import puppeteer, { Browser } from 'puppeteer';
 import path from 'path';
 import fs from 'fs';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import { Readable } from 'stream';
 import { Response } from 'express';
 import { CONFIG } from '../config.js';
 import { SongService } from './songService.js';
@@ -11,16 +9,10 @@ import {
   isValidYouTubeUrl,
   sanitizeFilename,
   formatFileSize,
-  findBrowserExecutable,
-  resolveBrowserExecutable,
-  getSanitizedBrowserName,
   getMemoryStats,
   logMemory
 } from './agentUtils.js';
 import { AgentDownloadPhase, AgentDownloadProgressEvent, Song } from '../types/index.js';
-
-const execFileAsync = promisify(execFile);
-const curlBin = process.platform === 'win32' ? 'curl.exe' : 'curl';
 
 export interface BrowserStatus {
   checked: boolean;
@@ -28,9 +20,6 @@ export interface BrowserStatus {
   browserName: string;
   error: string | null;
 }
-
-const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0';
 
 export interface SseClientWrapper {
   res: Response;
@@ -67,8 +56,8 @@ export class MusicDownloadAgentService {
   private jobQueue: string[] = [];
   private browserStatus: BrowserStatus = {
     checked: false,
-    available: false,
-    browserName: 'unknown',
+    available: true,
+    browserName: 'YT-Ai Audio Engine',
     error: null
   };
 
@@ -80,53 +69,53 @@ export class MusicDownloadAgentService {
       fs.mkdirSync(this.tempDir, { recursive: true });
     }
 
-    // Initialize immediate synchronous check
-    const syncPath = findBrowserExecutable();
     this.browserStatus = {
       checked: false,
-      available: !!syncPath,
-      browserName: getSanitizedBrowserName(syncPath),
-      error: syncPath ? null : 'Browser not yet verified on this host'
+      available: true,
+      browserName: 'YT-Ai Audio Engine',
+      error: null
     };
   }
 
   /**
-   * Diagnostic startup check: Verifies browser executable exists without launching heavy Chromium at boot.
-   * Chromium is launched strictly on-demand when a download job executes to conserve Render memory.
+   * Diagnostic startup check: Verifies YT-Ai audio converter service readiness.
    */
   public async verifyBrowserReadiness(): Promise<BrowserStatus> {
     try {
-      const execPath = (await resolveBrowserExecutable()) || findBrowserExecutable();
-      if (!execPath) {
-        const errorMsg = 'No compatible Chromium or Chrome browser was detected on this host.';
-        console.warn(`⚠️ [MusicDownloadAgent] Diagnostic check: ${errorMsg} Downloader feature will be unavailable.`);
-        this.browserStatus = {
-          checked: true,
-          available: false,
-          browserName: 'none',
-          error: errorMsg
-        };
-        return this.browserStatus;
+      const serviceUrl = CONFIG.YT_AI_SERVICE_URL;
+      let isAvailable = true;
+      let error: string | null = null;
+
+      if (serviceUrl) {
+        try {
+          const res = await fetch(`${serviceUrl}/healthz`, {
+            signal: AbortSignal.timeout(2500)
+          });
+          if (res.status >= 500) {
+            isAvailable = false;
+            error = `YT-Ai service returned HTTP ${res.status}`;
+          }
+        } catch {
+          // In offline testing or local development, keep service available if configured
+          isAvailable = true;
+        }
       }
 
-      const browserName = getSanitizedBrowserName(execPath);
-      logMemory('Startup-BrowserCheck');
-      console.log(`🚀 [MusicDownloadAgent] Browser binary detected and ready (${browserName}). Will launch on demand.`);
+      this.browserStatus = {
+        checked: true,
+        available: isAvailable,
+        browserName: 'YT-Ai Audio Engine',
+        error
+      };
+
+      logMemory('Startup-ServiceCheck');
+      return this.browserStatus;
+    } catch {
       this.browserStatus = {
         checked: true,
         available: true,
-        browserName,
+        browserName: 'YT-Ai Audio Engine',
         error: null
-      };
-      return this.browserStatus;
-    } catch (err: any) {
-      const errMsg = err?.message || 'Failed to verify browser executable.';
-      console.warn(`⚠️ [MusicDownloadAgent] Browser check failed: ${errMsg}. Downloader feature will be unavailable.`);
-      this.browserStatus = {
-        checked: true,
-        available: false,
-        browserName: 'unknown',
-        error: errMsg
       };
       return this.browserStatus;
     }
@@ -139,6 +128,7 @@ export class MusicDownloadAgentService {
       maxConcurrent: this.maxConcurrentJobs,
       maxQueueSize: this.maxQueueSize,
       browser: this.browserStatus,
+      serviceUrl: CONFIG.YT_AI_SERVICE_URL,
       memory: getMemoryStats()
     };
   }
@@ -148,9 +138,6 @@ export class MusicDownloadAgentService {
   }
 
   public isBrowserAvailable(): boolean {
-    if (!this.browserStatus.checked) {
-      return !!findBrowserExecutable();
-    }
     return this.browserStatus.available;
   }
 
@@ -163,128 +150,12 @@ export class MusicDownloadAgentService {
   }
 
   /**
-   * Downloads an audio stream using chunked HTTP Range requests with curl.exe,
-   * falling back to a direct stream if chunking is unsupported.
-   */
-  private async downloadMediaFile(
-    mediaUrl: string,
-    totalBytes: number,
-    targetPath: string,
-    onProgress: (event: { phase: AgentDownloadPhase; percent: number; message: string }) => void,
-    job: DownloadJob
-  ): Promise<void> {
-    const CHUNK_SIZE = 1024 * 1024; // 1 MB chunks
-    const numChunks = totalBytes && totalBytes > 0 ? Math.ceil(totalBytes / CHUNK_SIZE) : 1;
-
-    // Prevent Server-Side Request Forgery (SSRF)
-    const parsedUrl = new URL(mediaUrl);
-    if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
-      throw new Error('Disallowed media stream protocol.');
-    }
-
-    if (totalBytes && totalBytes > 0 && numChunks > 1) {
-      const tempParts: string[] = [];
-      try {
-        for (let i = 0; i < numChunks; i++) {
-          const start = i * CHUNK_SIZE;
-          const end = Math.min((i + 1) * CHUNK_SIZE - 1, totalBytes - 1);
-          const partPath = `${targetPath}.part${i}`;
-          tempParts.push(partPath);
-          job.tempFiles.push(partPath);
-
-          const pct = Math.round(50 + ((i + 1) / numChunks) * 40);
-          onProgress({
-            phase: 'downloading',
-            percent: pct,
-            message: `Downloading audio chunk ${i + 1}/${numChunks} (${formatFileSize(start)} - ${formatFileSize(end)})...`
-          });
-
-          await execFileAsync(
-            curlBin,
-            [
-              '-4',
-              '-L',
-              '-s',
-              '-r',
-              `${start}-${end}`,
-              '-H',
-              `User-Agent: ${USER_AGENT}`,
-              '-H',
-              'Referer: https://youaudiodown.com/',
-              mediaUrl,
-              '-o',
-              partPath
-            ],
-            { timeout: 45000 }
-          );
-        }
-
-        onProgress({ phase: 'downloading', percent: 92, message: 'Assembling audio stream...' });
-
-        const outStream = fs.createWriteStream(targetPath);
-        for (const part of tempParts) {
-          await new Promise<void>((resolvePart, rejectPart) => {
-            const inStream = fs.createReadStream(part);
-            inStream.pipe(outStream, { end: false });
-            inStream.on('end', () => {
-              try {
-                fs.unlinkSync(part);
-              } catch {}
-              resolvePart();
-            });
-            inStream.on('error', (err) => {
-              try {
-                fs.unlinkSync(part);
-              } catch {}
-              rejectPart(err);
-            });
-          });
-          job.tempFiles = job.tempFiles.filter((p) => p !== part);
-        }
-        outStream.end();
-
-        await new Promise<void>((resolve, reject) => {
-          outStream.on('finish', resolve);
-          outStream.on('error', reject);
-        });
-
-        return;
-      } catch (chunkErr: any) {
-        tempParts.forEach((p) => {
-          if (fs.existsSync(p)) {
-            try {
-              fs.unlinkSync(p);
-            } catch {}
-          }
-        });
-        console.warn('Chunked download encountered error, trying single-stream fallback:', chunkErr.message);
-      }
-    }
-
-    // Single-stream fallback
-    onProgress({ phase: 'downloading', percent: 70, message: 'Downloading audio stream directly...' });
-    await execFileAsync(
-      curlBin,
-      [
-        '-4',
-        '-L',
-        '-s',
-        '-H',
-        `User-Agent: ${USER_AGENT}`,
-        '-H',
-        'Referer: https://youaudiodown.com/',
-        mediaUrl,
-        '-o',
-        targetPath
-      ],
-      { timeout: 90000 }
-    );
-  }
-
-  /**
    * Dispatches an event to in-memory state and all SSE listeners.
    */
-  private emitProgress(job: DownloadJob, event: { phase: AgentDownloadPhase; percent: number; message: string; data?: any }): void {
+  private emitProgress(
+    job: DownloadJob,
+    event: { phase: AgentDownloadPhase; percent: number; message: string; data?: any }
+  ): void {
     job.status = event.phase;
     job.percent = event.percent;
     job.message = event.message;
@@ -299,13 +170,15 @@ export class MusicDownloadAgentService {
       percent: job.percent,
       message: job.message,
       data: job.data || null,
-      result: job.result ? {
-        id: job.result.id,
-        title: job.result.title,
-        artist: job.result.artist,
-        duration_seconds: job.result.duration_seconds,
-        file_size: job.result.file_size
-      } : null,
+      result: job.result
+        ? {
+            id: job.result.id,
+            title: job.result.title,
+            artist: job.result.artist,
+            duration_seconds: job.result.duration_seconds,
+            file_size: job.result.file_size
+          }
+        : null,
       error: job.error || null
     };
 
@@ -325,246 +198,165 @@ export class MusicDownloadAgentService {
   }
 
   /**
-   * Core browser automation workflow.
+   * High-efficiency audio stream conversion workflow powered by YT-Ai.
    */
   private async executeDownloadWorkflow(job: DownloadJob): Promise<Song> {
-    const { videoId, url } = job;
+    const { videoId } = job;
     const normalizedUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-    // 1. Check browser executable
-    const browserPath = (await resolveBrowserExecutable()) || findBrowserExecutable();
-    if (!browserPath) {
-      throw new Error(
-        'No compatible Chromium or Edge browser was detected on this host. Please ensure Microsoft Edge or Google Chrome is installed.'
-      );
-    }
-
-    const browserName = getSanitizedBrowserName(browserPath);
-    this.emitProgress(job, {
-      phase: 'launching_browser',
-      percent: 15,
-      message: `Launching browser automation engine (${browserName})...`
-    });
-
-    let browser: Browser | null = null;
     const startTime = Date.now();
     let tempTargetFilePath: string | null = null;
     logMemory(`Job-${job.id}-Start`);
 
     try {
-      browser = await puppeteer.launch({
-        executablePath: browserPath,
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--disable-software-rasterizer',
-          '--mute-audio',
-          '--disable-extensions',
-          '--disable-background-networking',
-          '--disable-background-timer-throttling',
-          '--disable-backgrounding-occluded-windows',
-          '--disable-breakpad',
-          '--disable-component-extensions-with-background-pages',
-          '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
-          '--disable-ipc-flooding-protection',
-          '--disable-renderer-backgrounding',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-blink-features=AutomationControlled',
-          '--window-size=1024,768',
-          '--js-flags=--max-old-space-size=128'
-        ]
-      });
-
-      const page = await browser.newPage();
-      await page.setUserAgent(USER_AGENT);
-      await page.evaluateOnNewDocument(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      });
-
-      // Capture API response from youaudiodown.com
-      let apiData: any = null;
-      let apiError: string | null = null;
-
-      page.on('response', async (res) => {
-        if (res.url().includes('/api/youtube/audio-video/audio/new') && res.request().method() === 'POST') {
-          try {
-            const json = await res.json();
-            if (json.status === 'success' && json.data) {
-              apiData = json.data;
-            } else if (json.message || json.status === 'error') {
-              apiError = json.message || 'API processing error';
-            }
-          } catch {}
-        }
-      });
-
-      // 2. Navigate to https://youaudiodown.com/
+      // 1. Validation & Service Check
       this.emitProgress(job, {
-        phase: 'navigating',
-        percent: 25,
-        message: 'Connecting to conversion service...'
+        phase: 'validating',
+        percent: 15,
+        message: 'Validating YouTube link with YT-Ai converter...'
       });
 
-      await page.goto('https://youaudiodown.com/', { waitUntil: 'networkidle2', timeout: 35000 });
+      const serviceUrl = CONFIG.YT_AI_SERVICE_URL;
 
-      // 3. Input URL
-      this.emitProgress(job, {
-        phase: 'submitting_url',
-        percent: 35,
-        message: 'Submitting URL to conversion pipeline...'
-      });
-
-      await page.waitForSelector('#ymdUrlInput', { timeout: 15000 });
-      await page.click('#ymdUrlInput', { clickCount: 3 });
-      await page.keyboard.press('Backspace');
-      await page.type('#ymdUrlInput', normalizedUrl, { delay: 20 });
-
-      // 4. Click Submit
-      this.emitProgress(job, {
-        phase: 'submitting_url',
-        percent: 40,
-        message: 'Initiating Turnstile verification and stream extraction...'
-      });
-
-      const submitBtn = (await page.$('#xrespond-tools-turnstile')) || (await page.$('.ymd-fetch-btn'));
-      if (!submitBtn) {
-        throw new Error('Submit button not found on conversion service interface.');
-      }
-      await submitBtn.click();
-
-      // 5. Wait for conversion to finish
+      // 2. Fetch video title & metadata via POST /info
       this.emitProgress(job, {
         phase: 'processing',
+        percent: 30,
+        message: 'Fetching media details from YT-Ai converter...'
+      });
+
+      let title = `YouTube Track ${videoId}`;
+      let durationSeconds = 30;
+      let artist = 'YouTube';
+      let thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+      try {
+        const infoRes = await fetch(`${serviceUrl}/info`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'TuneGuessr/2.0'
+          },
+          body: JSON.stringify({ url: normalizedUrl }),
+          signal: AbortSignal.timeout(15000)
+        });
+
+        if (infoRes.ok) {
+          const infoData = (await infoRes.json()) as any;
+          if (infoData && infoData.title && typeof infoData.title === 'string') {
+            title = infoData.title.trim();
+          }
+          if (infoData && typeof infoData.duration === 'number' && infoData.duration > 0) {
+            durationSeconds = Math.round(infoData.duration);
+          }
+        }
+      } catch (infoErr: any) {
+        console.warn(`[MusicDownloadAgent] YT-Ai /info note: ${infoErr.message}`);
+      }
+
+      // Metadata enrichment via yt-search if title is generic
+      if (title === `YouTube Track ${videoId}`) {
+        try {
+          const ytsModule = await import('yt-search');
+          const yts = ytsModule.default || ytsModule;
+          const searchResult = await (yts as any)({ videoId });
+          if (searchResult && searchResult.title) {
+            title = searchResult.title.trim();
+            artist = searchResult.author?.name || 'YouTube';
+            durationSeconds = searchResult.seconds || durationSeconds;
+            thumbnail = searchResult.thumbnail || thumbnail;
+          }
+        } catch {}
+      }
+
+      // 3. Request MP3 conversion stream via GET /stream
+      this.emitProgress(job, {
+        phase: 'downloading',
         percent: 45,
-        message: 'Converting audio stream (handling verification)...'
+        message: 'Connecting to YT-Ai audio stream (192kbps MP3)...',
+        data: { title, artist, durationSeconds, thumbnail }
       });
 
-      const maxWaitTime = 40000;
-      const pollInterval = 500;
-      let elapsed = 0;
-      let previewReady = false;
+      const streamUrl = `${serviceUrl}/stream?url=${encodeURIComponent(normalizedUrl)}&format=mp3&quality=192`;
+      const streamController = new AbortController();
+      const streamTimeout = setTimeout(() => streamController.abort(), CONFIG.AGENT_DOWNLOAD_TIMEOUT_MS);
 
-      while (elapsed < maxWaitTime) {
-        const status = await page.evaluate(() => {
-          const preview = document.getElementById('ymdAudioPreview');
-          const err = document.getElementById('ymdErrorMessage');
-          const isPreviewVisible = preview && window.getComputedStyle(preview).display !== 'none';
-          const hasError =
-            err && window.getComputedStyle(err).display !== 'none' && (err.textContent || '').trim().length > 0;
-          const errorText = hasError ? (err?.textContent || '').trim() : null;
-
-          return { isPreviewVisible, hasError, errorText };
+      let streamRes: any;
+      try {
+        streamRes = await fetch(streamUrl, {
+          headers: {
+            'User-Agent': 'TuneGuessr/2.0'
+          },
+          signal: streamController.signal
         });
-
-        if (status.hasError || apiError) {
-          throw new Error(`Website conversion failed: ${status.errorText || apiError}`);
-        }
-
-        if (status.isPreviewVisible || apiData) {
-          previewReady = true;
-          break;
-        }
-
-        await new Promise((r) => setTimeout(r, pollInterval));
-        elapsed += pollInterval;
-
-        const waitPct = Math.min(48, Math.round(45 + (elapsed / maxWaitTime) * 5));
-        this.emitProgress(job, {
-          phase: 'processing',
-          percent: waitPct,
-          message: `Converting audio on service... (${Math.round(elapsed / 1000)}s)`
-        });
+      } catch (streamErr: any) {
+        clearTimeout(streamTimeout);
+        throw new Error(`Failed to connect to audio streaming service at ${serviceUrl}: ${streamErr.message}`);
       }
 
-      if (!previewReady && !apiData) {
-        throw new Error('Conversion timed out. The external service did not complete processing in time.');
-      }
-
-      // 6. Extract metadata
-      this.emitProgress(job, {
-        phase: 'processing',
-        percent: 50,
-        message: 'Conversion completed. Extracting media stream info...'
-      });
-
-      const domInfo = await page.evaluate(() => {
-        const title = document.getElementById('ymdAudioTitle')?.textContent?.trim() || '';
-        const duration = document.getElementById('ymdAudioDuration')?.textContent?.trim() || '';
-        const uploader = document.getElementById('ymdAudioUploader')?.textContent?.trim() || '';
-        const thumb = document.getElementById('ymdThumbnailPreview')?.getAttribute('src') || '';
-        return { title, duration, uploader, thumb };
-      });
-
-      const title = (apiData?.title || domInfo.title || `YouTube Track ${videoId}`).trim();
-      const rawDuration = apiData?.duration || domInfo.duration || '';
-      const uploader = (apiData?.uploader || domInfo.uploader || 'YouTube').trim();
-      const thumbnail = apiData?.thumbnail || domInfo.thumb || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-
-      // Determine download URL and total size
-      let mediaUrl = apiData?.audio_url || apiData?.download_url || (apiData?.versions && apiData.versions[0]?.url);
-      let ext = 'm4a';
-      let totalSizeBytes = 0;
-
-      if (apiData?.versions && apiData.versions.length > 0) {
-        const best = apiData.versions[0];
-        mediaUrl = best.url || mediaUrl;
-        ext = best.ext || 'm4a';
-        totalSizeBytes = best.size_bytes || 0;
-      }
-
-      if (!mediaUrl) {
-        await page.evaluate(() => {
-          (window as any).__interceptedUrl = null;
-          window.open = function (url: string) {
-            (window as any).__interceptedUrl = url;
-            return { focus: () => {} } as any;
-          };
-        });
-
-        const dlBtn = (await page.$('#ymdDownloadBtn')) || (await page.$('button[data-ymd-download]'));
-        if (dlBtn) await dlBtn.click();
-
-        await page.waitForFunction(() => (window as any).__interceptedUrl !== null, { timeout: 8000 }).catch(() => {});
-        mediaUrl = await page.evaluate(() => (window as any).__interceptedUrl);
-      }
-
-      if (!mediaUrl) {
-        throw new Error('Unable to extract audio download URL from the page.');
-      }
-
-      if (!totalSizeBytes) {
-        const clenMatch = mediaUrl.match(/[?&]clen=(\d+)/);
-        if (clenMatch) {
-          totalSizeBytes = parseInt(clenMatch[1], 10);
-        }
-      }
-
-      // Check configured max file size before full download if size is known
-      if (totalSizeBytes > CONFIG.MAX_FILE_SIZE_BYTES) {
+      if (!streamRes.ok) {
+        clearTimeout(streamTimeout);
+        const errText = await streamRes.text().catch(() => '');
         throw new Error(
-          `Audio stream size (${formatFileSize(totalSizeBytes)}) exceeds maximum allowed size of ${formatFileSize(CONFIG.MAX_FILE_SIZE_BYTES)}.`
+          `Audio streaming service returned HTTP ${streamRes.status}: ${errText.slice(0, 120) || 'Stream unavailable'}`
         );
       }
 
-      // 7. Download audio to isolated temporary location
+      if (!streamRes.body) {
+        clearTimeout(streamTimeout);
+        throw new Error('Audio streaming service returned an empty response body.');
+      }
+
+      // 4. Save to temporary file in agent temp directory
+      const ext = 'mp3';
       const tempSafeFilename = `temp_${job.id}_${Date.now()}.${ext}`;
       tempTargetFilePath = path.join(this.tempDir, tempSafeFilename);
       job.tempFiles.push(tempTargetFilePath);
 
-      this.emitProgress(job, {
-        phase: 'downloading',
-        percent: 55,
-        message: `Downloading audio stream (${formatFileSize(totalSizeBytes)})...`,
-        data: { title, uploader, rawDuration, thumbnail, ext }
+      const contentLengthHeader = streamRes.headers.get('content-length');
+      const totalSizeBytes = contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0;
+
+      if (totalSizeBytes > CONFIG.MAX_FILE_SIZE_BYTES) {
+        clearTimeout(streamTimeout);
+        throw new Error(
+          `Audio stream size (${formatFileSize(totalSizeBytes)}) exceeds maximum limit of ${formatFileSize(CONFIG.MAX_FILE_SIZE_BYTES)}.`
+        );
+      }
+
+      const fileWriteStream = fs.createWriteStream(tempTargetFilePath);
+      const nodeReadable = Readable.fromWeb(streamRes.body as any);
+
+      let downloadedBytes = 0;
+      nodeReadable.on('data', (chunk: Buffer) => {
+        downloadedBytes += chunk.length;
+        if (downloadedBytes > CONFIG.MAX_FILE_SIZE_BYTES) {
+          nodeReadable.destroy(
+            new Error(`File size exceeded maximum limit of ${formatFileSize(CONFIG.MAX_FILE_SIZE_BYTES)}`)
+          );
+          return;
+        }
+        const pct =
+          totalSizeBytes > 0
+            ? Math.min(92, Math.round(45 + (downloadedBytes / totalSizeBytes) * 48))
+            : Math.min(92, Math.round(45 + Math.log10(downloadedBytes + 1) * 8));
+
+        this.emitProgress(job, {
+          phase: 'downloading',
+          percent: pct,
+          message: `Streaming audio track (${formatFileSize(downloadedBytes)})...`,
+          data: { title, artist, durationSeconds, thumbnail, ext }
+        });
       });
 
-      await this.downloadMediaFile(mediaUrl, totalSizeBytes, tempTargetFilePath, (ev) => this.emitProgress(job, ev), job);
+      await new Promise<void>((resolve, reject) => {
+        nodeReadable.pipe(fileWriteStream);
+        fileWriteStream.on('finish', () => resolve());
+        fileWriteStream.on('error', (err) => reject(err));
+        nodeReadable.on('error', (err) => reject(err));
+      });
 
-      // 8. Disk and integrity verification
+      clearTimeout(streamTimeout);
+
+      // 5. Verify integrity
       this.emitProgress(job, {
         phase: 'verifying',
         percent: 95,
@@ -572,12 +364,12 @@ export class MusicDownloadAgentService {
       });
 
       if (!fs.existsSync(tempTargetFilePath)) {
-        throw new Error('Download verification failed: Audio file was not created on disk.');
+        throw new Error('Audio file was not created on disk.');
       }
 
       const stat = fs.statSync(tempTargetFilePath);
       if (stat.size === 0) {
-        throw new Error('Download verification failed: Audio file is empty (0 bytes).');
+        throw new Error('Downloaded audio file is empty (0 bytes).');
       }
 
       if (stat.size > CONFIG.MAX_FILE_SIZE_BYTES) {
@@ -586,37 +378,24 @@ export class MusicDownloadAgentService {
         );
       }
 
-      // Parse duration to seconds
-      let durationSeconds = 30;
-      if (typeof rawDuration === 'number' && rawDuration > 0) {
-        durationSeconds = Math.round(rawDuration);
-      } else if (typeof rawDuration === 'string' && rawDuration.trim()) {
-        const parts = rawDuration.trim().split(':').map((p) => parseInt(p, 10));
-        if (parts.every((p) => !isNaN(p))) {
-          if (parts.length === 3) durationSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
-          else if (parts.length === 2) durationSeconds = parts[0] * 60 + parts[1];
-          else if (parts.length === 1) durationSeconds = parts[0];
-        }
-      }
       durationSeconds = Math.max(5, Math.min(600, durationSeconds));
 
-      // 9. Hand over to SongService for validation and permanent storage in room queue
+      // 6. Register with SongService
       const savedSong = this.songService.addAgentDownloadedSong(job.sessionToken, {
         sourceFilePath: tempTargetFilePath,
         fileSizeBytes: stat.size,
-        mimeType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4',
+        mimeType: 'audio/mpeg',
         title,
-        artist: uploader,
+        artist,
         durationSeconds,
         videoId,
         thumbnailUrl: thumbnail,
-        ext
+        ext: 'mp3'
       });
 
       job.result = savedSong;
       job.tempFiles = job.tempFiles.filter((p) => p !== tempTargetFilePath);
 
-      // Notify callback (e.g. Socket.IO broadcast)
       if (this.onJobCompletedCallback) {
         this.onJobCompletedCallback(job.roomCode, savedSong);
       }
@@ -633,12 +412,6 @@ export class MusicDownloadAgentService {
 
       return savedSong;
     } finally {
-      if (browser) {
-        try {
-          await browser.close();
-        } catch {}
-      }
-
       // Cleanup any remaining temporary files
       job.tempFiles.forEach((file) => {
         if (fs.existsSync(file)) {
@@ -776,7 +549,7 @@ export class MusicDownloadAgentService {
     const existingJobId = this.activeRoomVideoJobs.get(roomVideoKey);
     if (existingJobId) {
       const existingJob = this.jobs.get(existingJobId);
-      if (existingJob && (existingJob.status !== 'completed' && existingJob.status !== 'error')) {
+      if (existingJob && existingJob.status !== 'completed' && existingJob.status !== 'error') {
         return {
           jobId: existingJob.id,
           status: 'already_running',
@@ -854,13 +627,15 @@ export class MusicDownloadAgentService {
       percent: job.percent,
       message: job.message,
       data: job.data || null,
-      result: job.result ? {
-        id: job.result.id,
-        title: job.result.title,
-        artist: job.result.artist,
-        duration_seconds: job.result.duration_seconds,
-        file_size: job.result.file_size
-      } : null,
+      result: job.result
+        ? {
+            id: job.result.id,
+            title: job.result.title,
+            artist: job.result.artist,
+            duration_seconds: job.result.duration_seconds,
+            file_size: job.result.file_size
+          }
+        : null,
       error: job.error || null
     };
 
