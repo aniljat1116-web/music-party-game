@@ -15,11 +15,12 @@ import {
   Sparkles,
   ShieldAlert,
   Download,
-  Copy
+  Copy,
+  ExternalLink
 } from 'lucide-react';
 import { useGame } from '../context/GameContext';
 import { formatTime } from '../utils/formatTime';
-import type { JamendoTrackResult, Song, YouTubeSearchResult, AgentDownloadProgressEvent } from '../types';
+import type { JamendoTrackResult, Song, YouTubeSearchResult } from '../types';
 
 interface AddSongModalProps {
   isOpen: boolean;
@@ -39,22 +40,11 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
     addJamendoSong,
     searchYouTube,
     addYouTubeSong,
-    startAgentDownload,
     uploadSong,
     addToast
   } = useGame();
 
   const [activeTab, setActiveTab] = useState<'youtube' | 'upload' | 'jamendo' | 'agent'>('youtube');
-
-  // --- Tab 0: Agent Download State ---
-  const [agentUrl, setAgentUrl] = useState('');
-  const [isAgentDownloading, setIsAgentDownloading] = useState(false);
-  const [agentProgress, setAgentProgress] = useState<{
-    percent: number;
-    status: string;
-    message: string;
-  } | null>(null);
-  const [agentError, setAgentError] = useState<string | null>(null);
 
   // --- Tab 1: YouTube Search State ---
   const [ytQuery, setYtQuery] = useState('');
@@ -158,49 +148,11 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
       setUploadError(null);
       setIsUploading(false);
       setUploadProgress(0);
-      setAgentError(null);
-      setIsAgentDownloading(false);
-      setAgentProgress(null);
       setCopiedYtVideoId(null);
     }
   }, [isOpen]);
 
-  const handleAgentDownloadSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const url = agentUrl.trim();
-    if (!url || isAgentDownloading) return;
-
-    if (mySongs.length >= maxSongs) {
-      setAgentError(`You have already added the maximum of ${maxSongs} songs.`);
-      return;
-    }
-
-    setIsAgentDownloading(true);
-    setAgentError(null);
-    setAgentProgress({ percent: 5, status: 'validating', message: 'Validating YouTube link...' });
-
-    const res = await startAgentDownload(url, (ev: AgentDownloadProgressEvent) => {
-      setAgentProgress({
-        percent: ev.percent,
-        status: ev.status,
-        message: ev.message
-      });
-    });
-
-    setIsAgentDownloading(false);
-
-    if (res.success) {
-      setAgentUrl('');
-      setAgentProgress(null);
-      setAgentError(null);
-      if (mySongs.length + 1 >= maxSongs) {
-        onClose();
-      }
-    } else {
-      setAgentError(res.error || 'Agent download failed.');
-    }
-  };
-
+  
   // Preview track audio playback
   const handleTogglePreview = (track: JamendoTrackResult) => {
     const audio = previewAudioRef.current;
@@ -541,7 +493,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
                 Add Track to Room
               </h3>
               <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                {mySongs.length}/{maxSongs} song slots filled • Instant YouTube search, local uploads & catalog
+                {mySongs.length}/{maxSongs} song slots filled • Legal catalog search & local uploads
               </span>
             </div>
           </div>
@@ -592,19 +544,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
               transition: 'all 0.2s ease'
             }}
           >
-            <Search size={16} /> YouTube Search
-            <span
-              style={{
-                fontSize: '0.7rem',
-                background: 'rgba(239, 68, 68, 0.2)',
-                color: '#fca5a5',
-                padding: '1px 6px',
-                borderRadius: 'var(--radius-full)',
-                fontWeight: 700
-              }}
-            >
-              1-Click
-            </span>
+            <Search size={16} /> Search Video
           </button>
 
           <button
@@ -688,13 +628,13 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
               transition: 'all 0.2s ease'
             }}
           >
-            <Download size={16} /> Download Audio
+            <Download size={16} /> Download Video
           </button>
         </div>
 
         {/* Tab Body Container */}
         <div style={{ padding: '1.5rem', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-          {/* TAB 0: AGENT YOUTUBE AUDIO DOWNLOAD */}
+          {/* TAB: DOWNLOAD VIDEO */}
           {activeTab === 'agent' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               <div
@@ -702,233 +642,83 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
                   background: 'rgba(239, 68, 68, 0.08)',
                   border: '1px solid rgba(239, 68, 68, 0.25)',
                   borderRadius: 'var(--radius-md)',
-                  padding: '1rem 1.25rem'
-                }}
-              >
-                <h4
-                  style={{
-                    margin: 0,
-                    fontSize: '0.95rem',
-                    fontWeight: 700,
-                    color: '#f87171',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    marginBottom: '0.35rem'
-                  }}
-                >
-                  <Sparkles size={16} /> YT-Ai YouTube Audio Converter
-                </h4>
-                <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  Paste a YouTube video URL or ID. The YT-Ai engine will automatically convert and extract high-fidelity MP3 audio directly into your room playlist.
-                </p>
-              </div>
-
-              {/* Form */}
-              <form onSubmit={handleAgentDownloadSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                <div style={{ display: 'flex', gap: '0.65rem' }}>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="Paste YouTube link (e.g. https://www.youtube.com/watch?v=... or https://youtu.be/...)"
-                    value={agentUrl}
-                    onChange={(e) => {
-                      setAgentUrl(e.target.value);
-                      if (agentError) setAgentError(null);
-                    }}
-                    disabled={isAgentDownloading}
-                    style={{ height: '46px', flex: 1 }}
-                    autoFocus
-                  />
-                  <button
-                    type="submit"
-                    className="btn"
-                    disabled={!agentUrl.trim() || isAgentDownloading || mySongs.length >= maxSongs}
-                    style={{
-                      minWidth: '130px',
-                      height: '46px',
-                      background: isAgentDownloading
-                        ? 'rgba(239, 68, 68, 0.5)'
-                        : 'linear-gradient(135deg, #ef4444, #dc2626)',
-                      color: '#fff',
-                      border: 'none',
-                      fontWeight: 700,
-                      boxShadow: '0 0 15px rgba(239, 68, 68, 0.35)'
-                    }}
-                  >
-                    {isAgentDownloading ? (
-                      <>
-                        <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
-                        <span>Downloading...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Download size={18} />
-                        <span>Add Song</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-
-                {mySongs.length >= maxSongs && (
-                  <div style={{ fontSize: '0.8rem', color: 'var(--amber)' }}>
-                    You have reached the maximum song limit ({maxSongs}/{maxSongs} tracks).
-                  </div>
-                )}
-              </form>
-
-              {/* Live Progress Bar and Status Messages */}
-              {isAgentDownloading && agentProgress && (
-                <div
-                  className="card card-glow"
-                  style={{
-                    background: 'rgba(15, 23, 42, 0.8)',
-                    border: '1px solid rgba(239, 68, 68, 0.35)',
-                    padding: '1.25rem',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.75rem'
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <Loader2 size={16} color="#ef4444" style={{ animation: 'spin 1.2s linear infinite' }} />
-                      <span
-                        style={{
-                          fontWeight: 700,
-                          fontSize: '0.9rem',
-                          color: '#f87171',
-                          textTransform: 'capitalize'
-                        }}
-                      >
-                        Phase: {agentProgress.status.replace(/_/g, ' ')}
-                      </span>
-                    </div>
-                    <span
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontWeight: 800,
-                        color: 'var(--cyan)',
-                        fontSize: '0.95rem'
-                      }}
-                    >
-                      {agentProgress.percent}%
-                    </span>
-                  </div>
-
-                  {/* Progress bar */}
-                  <div
-                    style={{
-                      width: '100%',
-                      height: '8px',
-                      borderRadius: '4px',
-                      background: 'rgba(255, 255, 255, 0.1)',
-                      overflow: 'hidden'
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: `${agentProgress.percent}%`,
-                        height: '100%',
-                        background: 'linear-gradient(90deg, #ef4444, #f59e0b, var(--cyan))',
-                        transition: 'width 0.3s ease',
-                        boxShadow: '0 0 10px rgba(239, 68, 68, 0.5)'
-                      }}
-                    />
-                  </div>
-
-                  <div
-                    style={{
-                      fontSize: '0.825rem',
-                      color: 'var(--text-secondary)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.4rem'
-                    }}
-                  >
-                    <span>{agentProgress.message}</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Error Banner */}
-              {agentError && (
-                <div
-                  className="error-banner"
-                  style={{
-                    margin: 0,
-                    flexDirection: 'column',
-                    alignItems: 'flex-start',
-                    gap: '0.5rem'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <AlertTriangle size={18} color="#ef4444" style={{ flexShrink: 0 }} />
-                    <span style={{ fontWeight: 600 }}>{agentError}</span>
-                  </div>
-                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Note: If the external conversion service is temporarily rate-limited, you can use the{' '}
-                    <strong>YouTube Stream</strong> tab for direct playback or the{' '}
-                    <strong>Upload Audio</strong> tab to upload a local audio file.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-          {/* TAB 1: YOUTUBE MUSIC SEARCH */}
-          {activeTab === 'youtube' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              {/* Instant Search Banner */}
-              <div
-                style={{
-                  background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(220, 38, 38, 0.05))',
-                  border: '1px solid rgba(239, 68, 68, 0.28)',
-                  borderRadius: 'var(--radius-md)',
-                  padding: '0.9rem 1.15rem',
+                  padding: '1.5rem',
                   display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '0.75rem',
-                  flexWrap: 'wrap'
+                  flexDirection: 'column',
+                  gap: '1rem'
                 }}
               >
                 <div>
                   <h4
                     style={{
                       margin: 0,
-                      fontSize: '0.95rem',
+                      fontSize: '1.05rem',
                       fontWeight: 700,
                       color: '#f87171',
                       display: 'flex',
                       alignItems: 'center',
-                      gap: '0.45rem',
-                      marginBottom: '0.2rem'
+                      gap: '0.5rem',
+                      marginBottom: '0.4rem'
                     }}
                   >
-                    <Sparkles size={16} /> Instant 1-Click Search & Play
+                    <Download size={18} /> Download Video
                   </h4>
-                  <p style={{ margin: 0, fontSize: '0.825rem', color: 'var(--text-secondary)' }}>
-                    Type any song title, artist, or paste a YouTube URL. Add instantly to the room with zero download wait time!
+                  <p style={{ margin: 0, fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                    Use the external video tool to convert and download any YouTube video to an audio MP3 file. Once downloaded, you can upload it directly into this room using the <strong>Upload Audio</strong> tab.
                   </p>
                 </div>
-                <span
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                  <a
+                    href="https://melamrahul.github.io/yt-ai/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.55rem',
+                      padding: '0.75rem 1.5rem',
+                      background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                      color: '#fff',
+                      fontWeight: 700,
+                      fontSize: '0.95rem',
+                      borderRadius: 'var(--radius-md)',
+                      textDecoration: 'none',
+                      boxShadow: '0 0 15px rgba(239, 68, 68, 0.35)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <span>Open Video Tool</span>
+                    <ExternalLink size={16} />
+                  </a>
+                </div>
+
+                <div
                   style={{
-                    background: 'rgba(16, 185, 129, 0.15)',
-                    color: 'var(--emerald)',
-                    border: '1px solid rgba(16, 185, 129, 0.3)',
-                    fontWeight: 700,
-                    fontSize: '0.75rem',
-                    padding: '0.25rem 0.6rem',
-                    borderRadius: 'var(--radius-full)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.3rem'
+                    background: 'rgba(0, 0, 0, 0.25)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '0.85rem 1rem',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)',
+                    lineHeight: 1.5
                   }}
                 >
-                  ⚡ Zero Wait Time
-                </span>
+                  <strong style={{ color: 'var(--text-secondary)' }}>How it works:</strong>
+                  <ol style={{ margin: '0.4rem 0 0 1.25rem', padding: 0 }}>
+                    <li>Click <strong>Open Video Tool</strong> to launch the converter in a new tab.</li>
+                    <li>Convert your desired YouTube video to MP3 and save it to your device.</li>
+                    <li>Switch back to TuneGuessr and open the <strong>Upload Audio</strong> tab to add the track to this room!</li>
+                  </ol>
+                </div>
               </div>
+            </div>
+          )}
 
+          {/* TAB 1: YOUTUBE MUSIC SEARCH */}
+          {activeTab === 'youtube' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               {/* Search Bar Form */}
               <form
                 onSubmit={handleYtSearch}
@@ -948,7 +738,7 @@ export const AddSongModal: React.FC<AddSongModalProps> = ({
                   <input
                     type="text"
                     className="form-input"
-                    placeholder="Search by song title, artist, or paste a YouTube URL..."
+                    placeholder="Search YouTube by song title, artist, or keywords..."
                     value={ytQuery}
                     onChange={(e) => setYtQuery(e.target.value)}
                     style={{
